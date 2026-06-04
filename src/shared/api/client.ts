@@ -20,11 +20,31 @@ function previewResponse<T>(command: string, args?: Record<string, unknown>): Pr
     return Promise.resolve({ color: '#34d399', x: 640, y: 360 } as T)
   }
 
+  if (command === 'test_pixel_rule') {
+    return Promise.resolve(true as T)
+  }
+
   if (command === 'validate_key_sequence') {
     return Promise.resolve({ valid: true, errors: [] } as T)
   }
 
-  if (command === 'start_runtime' || command === 'stop_runtime' || command === 'save_profile' || command === 'delete_profile' || command === 'set_active_profile') {
+  if (command === 'is_runtime_running') {
+    return Promise.resolve(false as T)
+  }
+
+  if (command === 'get_foreground_app') {
+    return Promise.resolve({ executable: 'Game.exe', path: 'C:\\Games\\Game.exe' } as T)
+  }
+
+  if (command === 'export_profile') {
+    return Promise.resolve('{}' as T)
+  }
+
+  if (command === 'stop_macro_recording') {
+    return Promise.resolve([] as T)
+  }
+
+  if (command === 'start_runtime' || command === 'stop_runtime' || command === 'save_profile' || command === 'delete_profile' || command === 'set_active_profile' || command === 'import_profile' || command === 'start_macro_recording' || command === 'test_pixel_actions') {
     return Promise.resolve(undefined as T)
   }
 

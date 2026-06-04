@@ -10,6 +10,9 @@ The v0.1.0 MVP includes:
 - Humanized press duration and delay timing with per-step min/max millisecond ranges.
 - Pixel Trigger rules that sample a screen pixel or adjacent pixels, support inverted matching and an optional second-pixel AND condition, then run or hold a configurable output action chain.
 - Toggle Hold rules that press once to hold a key or mouse button down, then press again to release it.
+- A foreground app guard that pauses or stops automation and releases held actions when the target executable loses focus.
+- Profile JSON import/export for backups and moving profiles between machines.
+- Native macro recording that captures supported keyboard and mouse-button actions with measured hold and delay timing.
 - A profile-level global Start/Stop hotkey, defaulting to `F4`, with optional on/off sound cues.
 - An Execution Log that reports runtime state, detected triggers, and emitted actions.
 - Responsive Pixel Trigger polling that runs independently from delayed macro and output action chains.
@@ -63,12 +66,17 @@ npm run tauri:build
 - `src/features/pixel-trigger` owns pixel detection UI and pixel rule editing.
 - `src/features/toggle-hold` owns toggle-hold rule editing.
 - `src/features/profiles` owns profile selection and profile list UI.
+- `src/features/app-guard` owns foreground application guard settings.
+- `src/features/profile-transfer` owns profile import/export UI.
+- `src/features/macro-recorder` owns native recorder controls.
 - `src/shared` owns frontend types, backend command bridge, and reusable UI primitives.
 - `src-tauri/src/profiles` owns profile models and JSON persistence.
 - `src-tauri/src/macros` owns validation and humanized delay logic.
 - `src-tauri/src/input` owns foreground Windows input simulation.
 - `src-tauri/src/screen` owns pixel sampling and color matching.
 - `src-tauri/src/runtime` owns start/stop state and automation loops.
+- `src-tauri/src/foreground` owns foreground executable detection.
+- `src-tauri/src/recorder` owns native macro input recording.
 - `src-tauri/src/commands` exposes the Tauri command interface.
 
 ## Safety Boundary

@@ -3,7 +3,8 @@ use tauri::{AppHandle, State};
 use crate::{
     input,
     macros::ValidationResult,
-    profiles::{self, PixelPoint, Profile, ProfileStore},
+    profiles::{self, PixelPoint, PixelRule, Profile, ProfileStore},
+    recorder::RecorderState,
     runtime::RuntimeState,
     screen::{self, PixelSample, PixelSampleRequest},
 };
@@ -29,6 +30,33 @@ pub fn set_active_profile(app: AppHandle, profile_id: String) -> Result<ProfileS
 }
 
 #[tauri::command]
+pub fn export_profile(app: AppHandle, profile_id: String) -> Result<String, String> {
+    profiles::export_profile(&app, &profile_id)
+}
+
+#[tauri::command]
+pub fn import_profile(app: AppHandle, json: String) -> Result<ProfileStore, String> {
+    profiles::import_profile(&app, &json)
+}
+
+#[tauri::command]
+pub fn get_foreground_app() -> Result<crate::foreground::ForegroundApp, String> {
+    crate::foreground::current_app()
+}
+
+#[tauri::command]
+pub fn start_macro_recording(state: State<RecorderState>) -> Result<(), String> {
+    state.start()
+}
+
+#[tauri::command]
+pub fn stop_macro_recording(
+    state: State<RecorderState>,
+) -> Result<Vec<crate::profiles::MacroStep>, String> {
+    state.stop()
+}
+
+#[tauri::command]
 pub fn start_runtime(
     app: AppHandle,
     state: State<RuntimeState>,
@@ -44,6 +72,11 @@ pub fn stop_runtime(app: AppHandle, state: State<RuntimeState>) -> Result<(), St
 }
 
 #[tauri::command]
+pub fn is_runtime_running(state: State<RuntimeState>) -> bool {
+    state.is_running()
+}
+
+#[tauri::command]
 pub fn sample_pixel(request: PixelSampleRequest) -> Result<PixelSample, String> {
     screen::sample_pixel(PixelPoint {
         x: request.x,
@@ -54,6 +87,16 @@ pub fn sample_pixel(request: PixelSampleRequest) -> Result<PixelSample, String> 
 #[tauri::command]
 pub fn pick_pixel() -> Result<PixelSample, String> {
     screen::pick_pixel_from_click(15_000)
+}
+
+#[tauri::command]
+pub fn test_pixel_rule(rule: PixelRule) -> Result<bool, String> {
+    crate::runtime::test_pixel_rule(&rule)
+}
+
+#[tauri::command]
+pub fn test_pixel_actions(app: AppHandle, rule: PixelRule) -> Result<(), String> {
+    crate::runtime::test_pixel_actions(&app, &rule)
 }
 
 #[tauri::command]

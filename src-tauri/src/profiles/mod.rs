@@ -1,5 +1,10 @@
 use serde::{Deserialize, Serialize};
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    sync::{Mutex, OnceLock},
+    time::{SystemTime, UNIX_EPOCH},
+};
 use tauri::{AppHandle, Manager};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -121,6 +126,26 @@ pub struct Profile {
 pub struct RuntimeSettings {
     pub toggle_hotkey: String,
     pub sound_enabled: bool,
+    #[serde(default)]
+    pub foreground_guard: ForegroundGuardSettings,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ForegroundGuardSettings {
+    pub enabled: bool,
+    pub executable: String,
+    pub on_focus_lost: String,
+}
+
+impl Default for ForegroundGuardSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            executable: String::new(),
+            on_focus_lost: "pause".into(),
+        }
+    }
 }
 
 impl Default for RuntimeSettings {
@@ -128,6 +153,7 @@ impl Default for RuntimeSettings {
         Self {
             toggle_hotkey: "F4".into(),
             sound_enabled: true,
+            foreground_guard: ForegroundGuardSettings::default(),
         }
     }
 }
@@ -140,33 +166,54 @@ pub struct ProfileStore {
 }
 
 const STORE_FILE: &str = "profiles.json";
+static STORE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 pub fn load_store(app: &AppHandle) -> Result<ProfileStore, String> {
+    let _guard = store_lock()?;
+    load_store_unlocked(app)
+}
+
+fn load_store_unlocked(app: &AppHandle) -> Result<ProfileStore, String> {
     let path = store_path(app)?;
     if !path.exists() {
         let store = default_store();
-        save_store(app, &store)?;
+        save_store_unlocked(app, &store)?;
         return Ok(store);
     }
 
     let data =
         fs::read_to_string(&path).map_err(|err| format!("Failed to read profiles: {err}"))?;
-    serde_json::from_str(&data).map_err(|err| format!("Failed to parse profiles: {err}"))
+    match serde_json::from_str(&data) {
+        Ok(store) => Ok(normalize_store(store)),
+        Err(error) => {
+            preserve_corrupt_store(&path)?;
+            let store = default_store();
+            save_store_unlocked(app, &store)?;
+            log::error!("Recovered malformed profile store: {error}");
+            Ok(store)
+        }
+    }
 }
 
 pub fn save_profile(app: &AppHandle, profile: Profile) -> Result<ProfileStore, String> {
-    let mut store = load_store(app)?;
+    let validation = crate::macros::validate_profile(&profile);
+    if !validation.valid {
+        return Err(validation.errors.join("; "));
+    }
+    let _guard = store_lock()?;
+    let mut store = load_store_unlocked(app)?;
     if let Some(existing) = store.profiles.iter_mut().find(|item| item.id == profile.id) {
         *existing = profile;
     } else {
         store.profiles.push(profile);
     }
-    save_store(app, &store)?;
+    save_store_unlocked(app, &store)?;
     Ok(store)
 }
 
 pub fn delete_profile(app: &AppHandle, profile_id: String) -> Result<ProfileStore, String> {
-    let mut store = load_store(app)?;
+    let _guard = store_lock()?;
+    let mut store = load_store_unlocked(app)?;
     if store.profiles.len() <= 1 {
         return Err("At least one profile must remain".into());
     }
@@ -185,12 +232,13 @@ pub fn delete_profile(app: &AppHandle, profile_id: String) -> Result<ProfileStor
             .ok_or_else(|| "At least one profile must remain".to_string())?;
     }
 
-    save_store(app, &store)?;
+    save_store_unlocked(app, &store)?;
     Ok(store)
 }
 
 pub fn set_active_profile(app: &AppHandle, profile_id: String) -> Result<ProfileStore, String> {
-    let mut store = load_store(app)?;
+    let _guard = store_lock()?;
+    let mut store = load_store_unlocked(app)?;
     if !store
         .profiles
         .iter()
@@ -199,7 +247,7 @@ pub fn set_active_profile(app: &AppHandle, profile_id: String) -> Result<Profile
         return Err(format!("Profile not found: {profile_id}"));
     }
     store.active_profile_id = profile_id;
-    save_store(app, &store)?;
+    save_store_unlocked(app, &store)?;
     Ok(store)
 }
 
@@ -212,7 +260,40 @@ pub fn get_active_profile(app: &AppHandle, profile_id: &str) -> Result<Profile, 
         .ok_or_else(|| format!("Profile not found: {profile_id}"))
 }
 
-fn save_store(app: &AppHandle, store: &ProfileStore) -> Result<(), String> {
+pub fn export_profile(app: &AppHandle, profile_id: &str) -> Result<String, String> {
+    let profile = get_active_profile(app, profile_id)?;
+    serde_json::to_string_pretty(&profile).map_err(|err| format!("Failed to export profile: {err}"))
+}
+
+pub fn import_profile(app: &AppHandle, json: &str) -> Result<ProfileStore, String> {
+    let mut profile: Profile =
+        serde_json::from_str(json).map_err(|err| format!("Invalid profile JSON: {err}"))?;
+    profile.id = uuid::Uuid::new_v4().to_string();
+    profile.name = format!("{} Imported", profile.name.trim());
+    regenerate_ids(&mut profile);
+    save_profile(app, profile.clone())?;
+    set_active_profile(app, profile.id)
+}
+
+fn regenerate_ids(profile: &mut Profile) {
+    for rule in &mut profile.macro_rules {
+        rule.id = uuid::Uuid::new_v4().to_string();
+        for step in &mut rule.steps {
+            step.id = uuid::Uuid::new_v4().to_string();
+        }
+    }
+    for rule in &mut profile.pixel_rules {
+        rule.id = uuid::Uuid::new_v4().to_string();
+        for step in &mut rule.action_steps {
+            step.id = uuid::Uuid::new_v4().to_string();
+        }
+    }
+    for rule in &mut profile.toggle_hold_rules {
+        rule.id = uuid::Uuid::new_v4().to_string();
+    }
+}
+
+fn save_store_unlocked(app: &AppHandle, store: &ProfileStore) -> Result<(), String> {
     let path = store_path(app)?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
@@ -220,7 +301,79 @@ fn save_store(app: &AppHandle, store: &ProfileStore) -> Result<(), String> {
     }
     let data = serde_json::to_string_pretty(store)
         .map_err(|err| format!("Failed to encode profiles: {err}"))?;
-    fs::write(path, data).map_err(|err| format!("Failed to write profiles: {err}"))
+    let temporary_path = path.with_extension("json.tmp");
+    fs::write(&temporary_path, data)
+        .map_err(|err| format!("Failed to write temporary profiles: {err}"))?;
+    replace_file(&temporary_path, &path)
+}
+
+fn store_lock() -> Result<std::sync::MutexGuard<'static, ()>, String> {
+    STORE_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .map_err(|_| "Profile store lock poisoned".to_string())
+}
+
+fn normalize_store(mut store: ProfileStore) -> ProfileStore {
+    if store.profiles.is_empty() {
+        return default_store();
+    }
+    if !store
+        .profiles
+        .iter()
+        .any(|profile| profile.id == store.active_profile_id)
+    {
+        store.active_profile_id = store.profiles[0].id.clone();
+    }
+    store
+}
+
+fn preserve_corrupt_store(path: &Path) -> Result<(), String> {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let backup = path.with_file_name(format!("profiles.corrupt-{timestamp}.json"));
+    fs::rename(path, backup).map_err(|err| format!("Failed to preserve corrupt profiles: {err}"))
+}
+
+#[cfg(windows)]
+fn replace_file(source: &Path, destination: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    let source = source
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    let destination = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    let moved = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if moved == 0 {
+        Err(format!(
+            "Failed to replace profiles: {}",
+            std::io::Error::last_os_error()
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(windows))]
+fn replace_file(source: &Path, destination: &Path) -> Result<(), String> {
+    fs::rename(source, destination).map_err(|err| format!("Failed to replace profiles: {err}"))
 }
 
 fn store_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -348,7 +501,7 @@ fn default_store() -> ProfileStore {
                 id: "toggle-default".into(),
                 name: "Right Click Hold".into(),
                 enabled: true,
-                trigger_key: "RIGHT CLICK".into(),
+                trigger_key: "F8".into(),
                 hold_key: "RIGHT CLICK".into(),
             }],
         }],
@@ -392,5 +545,60 @@ mod tests {
 
         assert_eq!(store.profiles.len(), 1);
         assert_eq!(store.active_profile_id, "default");
+    }
+
+    #[test]
+    fn validation_rejects_unsupported_keys_and_toggle_conflicts() {
+        let mut profile = default_store().profiles.remove(0);
+        profile.macro_rules[0].steps[0].key = "ARROWUP".into();
+        profile.toggle_hold_rules[0].hold_key = "F4".into();
+
+        let result = crate::macros::validate_profile(&profile);
+
+        assert!(!result.valid);
+        assert!(result
+            .errors
+            .iter()
+            .any(|error| error.contains("unsupported key")));
+        assert!(result
+            .errors
+            .iter()
+            .any(|error| error.contains("toggle hotkey")));
+    }
+
+    #[test]
+    fn validation_allows_toggle_hold_button_toggler() {
+        let mut profile = default_store().profiles.remove(0);
+        profile.toggle_hold_rules[0].trigger_key = "RIGHT CLICK".into();
+
+        let result = crate::macros::validate_profile(&profile);
+
+        assert!(result.valid);
+    }
+
+    #[test]
+    fn validation_rejects_duplicate_runtime_ids() {
+        let mut profile = default_store().profiles.remove(0);
+        profile.toggle_hold_rules[0].id = profile.macro_rules[0].id.clone();
+
+        let result = crate::macros::validate_profile(&profile);
+
+        assert!(!result.valid);
+        assert!(result
+            .errors
+            .iter()
+            .any(|error| error.contains("Duplicate id")));
+    }
+
+    #[test]
+    fn regenerated_profile_ids_are_unique() {
+        let mut profile = default_store().profiles.remove(0);
+        let original_profile_id = profile.id.clone();
+        let original_macro_id = profile.macro_rules[0].id.clone();
+        regenerate_ids(&mut profile);
+
+        assert_eq!(profile.id, original_profile_id);
+        assert_ne!(profile.macro_rules[0].id, original_macro_id);
+        assert_ne!(profile.macro_rules[0].steps[0].id, "step-a");
     }
 }

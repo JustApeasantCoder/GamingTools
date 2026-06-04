@@ -13,8 +13,8 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::{
-    input,
-    macros::{random_delay_ms, validate_rules},
+    foreground, input,
+    macros::{random_delay_ms, validate_profile},
     profiles::{MacroStep, PixelCondition, PixelRule, Profile},
     screen,
 };
@@ -39,12 +39,16 @@ struct RuntimeHandle {
 
 impl RuntimeState {
     pub fn start(&self, app: AppHandle, profile: Profile) -> Result<(), String> {
-        self.stop_worker()?;
-
-        let validation = validate_rules(&profile.macro_rules);
+        let validation = validate_profile(&profile);
         if !validation.valid {
             return Err(validation.errors.join("; "));
         }
+
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|_| "Runtime lock poisoned".to_string())?;
+        stop_handle(guard.take());
 
         let profile_name = profile.name.clone();
         let sound_enabled = profile.runtime_settings.sound_enabled;
@@ -52,25 +56,24 @@ impl RuntimeState {
         let thread_stop = Arc::clone(&stop);
         let thread_app = app.clone();
         let thread = thread::spawn(move || runtime_loop(thread_app, profile, thread_stop));
-        let mut guard = self
-            .inner
-            .lock()
-            .map_err(|_| "Runtime lock poisoned".to_string())?;
         *guard = Some(RuntimeHandle {
             stop,
             thread,
             sound_enabled,
         });
-        drop(guard);
-
-        emit_event(&app, "runtime", format!("Runtime started: {profile_name}"));
+        emit_event(
+            &app,
+            "runtime",
+            format!("Automation started: {profile_name}"),
+        );
         play_toggle_sound(true, sound_enabled);
+        drop(guard);
         Ok(())
     }
 
     pub fn stop(&self, app: &AppHandle) -> Result<(), String> {
         if let Some(sound_enabled) = self.stop_worker()? {
-            emit_event(app, "runtime", "Runtime stopped");
+            emit_event(app, "runtime", "Automation stopped");
             play_toggle_sound(false, sound_enabled);
         }
         Ok(())
@@ -79,7 +82,11 @@ impl RuntimeState {
     pub fn is_running(&self) -> bool {
         self.inner
             .lock()
-            .map(|guard| guard.is_some())
+            .map(|guard| {
+                guard
+                    .as_ref()
+                    .is_some_and(|handle| !handle.thread.is_finished())
+            })
             .unwrap_or(false)
     }
 
@@ -88,13 +95,72 @@ impl RuntimeState {
             .inner
             .lock()
             .map_err(|_| "Runtime lock poisoned".to_string())?;
-        if let Some(handle) = guard.take() {
-            handle.stop.store(true, Ordering::Relaxed);
-            let sound_enabled = handle.sound_enabled;
-            let _ = handle.thread.join();
-            return Ok(Some(sound_enabled));
+        Ok(stop_handle(guard.take()))
+    }
+}
+
+impl Drop for RuntimeState {
+    fn drop(&mut self) {
+        if let Ok(handle) = self.inner.get_mut() {
+            stop_handle(handle.take());
         }
-        Ok(None)
+    }
+}
+
+fn stop_handle(handle: Option<RuntimeHandle>) -> Option<bool> {
+    let handle = handle?;
+    handle.stop.store(true, Ordering::Relaxed);
+    let sound_enabled = handle.sound_enabled;
+    let _ = handle.thread.join();
+    Some(sound_enabled)
+}
+
+#[derive(Clone, Default)]
+struct InputOwners {
+    counts: Arc<Mutex<HashMap<String, usize>>>,
+}
+
+impl InputOwners {
+    fn acquire(&self, key: &str) -> Result<(), String> {
+        let normalized = key.trim().to_uppercase();
+        let mut counts = self
+            .counts
+            .lock()
+            .map_err(|_| "Input ownership lock poisoned".to_string())?;
+        if let Some(count) = counts.get_mut(&normalized) {
+            *count += 1;
+            return Ok(());
+        }
+        input::key_down(&normalized)?;
+        counts.insert(normalized, 1);
+        Ok(())
+    }
+
+    fn release(&self, key: &str) -> Result<(), String> {
+        let normalized = key.trim().to_uppercase();
+        let mut counts = self
+            .counts
+            .lock()
+            .map_err(|_| "Input ownership lock poisoned".to_string())?;
+        let Some(count) = counts.get_mut(&normalized) else {
+            return Ok(());
+        };
+        if *count > 1 {
+            *count -= 1;
+            return Ok(());
+        }
+        input::key_up(&normalized)?;
+        counts.remove(&normalized);
+        Ok(())
+    }
+
+    fn release_all(&self) {
+        if let Ok(mut counts) = self.counts.lock() {
+            for key in counts.keys() {
+                let _ = input::key_up(key);
+            }
+            counts.clear();
+        }
     }
 }
 
@@ -125,9 +191,11 @@ pub fn start_hotkey_monitor(app: AppHandle) {
                 waiting_for_release = false;
                 let state = app.state::<RuntimeState>();
                 if state.is_running() {
-                    let _ = state.stop(&app);
-                } else {
-                    let _ = state.start(app.clone(), active_profile.clone());
+                    if let Err(error) = state.stop(&app) {
+                        emit_event(&app, "error", error);
+                    }
+                } else if let Err(error) = state.start(app.clone(), active_profile.clone()) {
+                    emit_event(&app, "error", error);
                 }
             }
 
@@ -137,22 +205,88 @@ pub fn start_hotkey_monitor(app: AppHandle) {
 }
 
 fn runtime_loop(app: AppHandle, profile: Profile, stop: Arc<AtomicBool>) {
+    let inputs = InputOwners::default();
+    let guard_active = Arc::new(AtomicBool::new(true));
+    let guard_thread = {
+        let app = app.clone();
+        let profile = profile.clone();
+        let stop = Arc::clone(&stop);
+        let guard_active = Arc::clone(&guard_active);
+        let inputs = inputs.clone();
+        thread::spawn(move || foreground_guard_loop(app, profile, stop, guard_active, inputs))
+    };
     let input_thread = {
         let app = app.clone();
         let profile = profile.clone();
         let stop = Arc::clone(&stop);
-        thread::spawn(move || input_detection_loop(app, profile, stop))
+        let inputs = inputs.clone();
+        let guard_active = Arc::clone(&guard_active);
+        thread::spawn(move || input_detection_loop(app, profile, stop, guard_active, inputs))
     };
     let pixel_thread = {
         let stop = Arc::clone(&stop);
-        thread::spawn(move || pixel_detection_loop(app, profile, stop))
+        let inputs = inputs.clone();
+        let guard_active = Arc::clone(&guard_active);
+        thread::spawn(move || pixel_detection_loop(app, profile, stop, guard_active, inputs))
     };
 
     let _ = input_thread.join();
     let _ = pixel_thread.join();
+    let _ = guard_thread.join();
+    inputs.release_all();
 }
 
-fn input_detection_loop(app: AppHandle, profile: Profile, stop: Arc<AtomicBool>) {
+fn foreground_guard_loop(
+    app: AppHandle,
+    profile: Profile,
+    stop: Arc<AtomicBool>,
+    active: Arc<AtomicBool>,
+    inputs: InputOwners,
+) {
+    let guard = &profile.runtime_settings.foreground_guard;
+    if !guard.enabled {
+        return;
+    }
+    let mut was_active = true;
+    while !stop.load(Ordering::Relaxed) {
+        let is_active = foreground::matches_executable(&guard.executable);
+        active.store(is_active, Ordering::Relaxed);
+        if is_active != was_active {
+            if is_active {
+                emit_event(
+                    &app,
+                    "foregroundGuard",
+                    format!("Resumed: {} is foreground", guard.executable),
+                );
+            } else {
+                inputs.release_all();
+                emit_event(
+                    &app,
+                    "foregroundGuard",
+                    format!("Target app lost focus: {}", guard.executable),
+                );
+                if guard.on_focus_lost == "stop" {
+                    stop.store(true, Ordering::Relaxed);
+                    emit_event(
+                        &app,
+                        "runtime",
+                        "Automation stopped by foreground app guard",
+                    );
+                }
+            }
+            was_active = is_active;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
+fn input_detection_loop(
+    app: AppHandle,
+    profile: Profile,
+    stop: Arc<AtomicBool>,
+    guard_active: Arc<AtomicBool>,
+    inputs: InputOwners,
+) {
     let mut worker_threads = Vec::new();
     let mut macro_workers = HashMap::new();
 
@@ -162,9 +296,11 @@ fn input_detection_loop(app: AppHandle, profile: Profile, stop: Arc<AtomicBool>)
         worker_threads.push(spawn_action_worker(
             app.clone(),
             Arc::clone(&stop),
+            Arc::clone(&guard_active),
             rule.name.clone(),
             rule.steps.clone(),
             receiver,
+            inputs.clone(),
         ));
     }
 
@@ -175,6 +311,20 @@ fn input_detection_loop(app: AppHandle, profile: Profile, stop: Arc<AtomicBool>)
     let mut next_poll = Instant::now();
 
     while !stop.load(Ordering::Relaxed) {
+        if !guard_active.load(Ordering::Relaxed) {
+            for rule in profile
+                .toggle_hold_rules
+                .iter()
+                .filter(|rule| toggle_held_rules.contains(&rule.id))
+            {
+                let _ = inputs.release(&rule.hold_key);
+            }
+            toggle_held_rules.clear();
+            pressed_triggers.clear();
+            toggle_waiting_for_release.clear();
+            thread::sleep(Duration::from_millis(20));
+            continue;
+        }
         for rule in profile.macro_rules.iter().filter(|rule| rule.enabled) {
             let is_down = input::is_key_down(&rule.trigger_key);
             let was_down = pressed_triggers.contains(&rule.id);
@@ -184,7 +334,10 @@ fn input_detection_loop(app: AppHandle, profile: Profile, stop: Arc<AtomicBool>)
                 emit_event(
                     &app,
                     "macro",
-                    format!("Macro detected: {} ({})", rule.name, rule.trigger_key),
+                    format!(
+                        "Macro shortcut pressed: {} ({})",
+                        rule.name, rule.trigger_key
+                    ),
                 );
                 submit_action(&macro_workers, &rule.id);
             } else if !is_down && was_down {
@@ -201,21 +354,26 @@ fn input_detection_loop(app: AppHandle, profile: Profile, stop: Arc<AtomicBool>)
             } else if !trigger_is_down && waiting_for_release {
                 toggle_waiting_for_release.remove(&rule.id);
                 if toggle_held_rules.contains(&rule.id) {
-                    let _ = input::key_up(&rule.hold_key);
-                    toggle_held_rules.remove(&rule.id);
-                    emit_event(
-                        &app,
-                        "toggleHold",
-                        format!("{} released {}", rule.name, rule.hold_key),
-                    );
+                    if inputs.release(&rule.hold_key).is_ok() {
+                        toggle_held_rules.remove(&rule.id);
+                        emit_event(
+                            &app,
+                            "toggleHold",
+                            format!("{} released {}", rule.name, rule.hold_key),
+                        );
+                    }
                 } else {
-                    let _ = input::key_down(&rule.hold_key);
-                    toggle_held_rules.insert(rule.id.clone());
-                    emit_event(
-                        &app,
-                        "toggleHold",
-                        format!("{} holding {}", rule.name, rule.hold_key),
-                    );
+                    match inputs.acquire(&rule.hold_key) {
+                        Ok(()) => {
+                            toggle_held_rules.insert(rule.id.clone());
+                            emit_event(
+                                &app,
+                                "toggleHold",
+                                format!("{} holding {}", rule.name, rule.hold_key),
+                            );
+                        }
+                        Err(error) => emit_event(&app, "error", error),
+                    }
                 }
             }
         }
@@ -238,11 +396,17 @@ fn input_detection_loop(app: AppHandle, profile: Profile, stop: Arc<AtomicBool>)
         .iter()
         .filter(|rule| rule.enabled && toggle_held_rules.contains(&rule.id))
     {
-        let _ = input::key_up(&rule.hold_key);
+        let _ = inputs.release(&rule.hold_key);
     }
 }
 
-fn pixel_detection_loop(app: AppHandle, profile: Profile, stop: Arc<AtomicBool>) {
+fn pixel_detection_loop(
+    app: AppHandle,
+    profile: Profile,
+    stop: Arc<AtomicBool>,
+    guard_active: Arc<AtomicBool>,
+    inputs: InputOwners,
+) {
     let mut worker_threads = Vec::new();
     let mut pixel_workers = HashMap::new();
     for rule in profile
@@ -255,20 +419,57 @@ fn pixel_detection_loop(app: AppHandle, profile: Profile, stop: Arc<AtomicBool>)
         worker_threads.push(spawn_action_worker(
             app.clone(),
             Arc::clone(&stop),
+            Arc::clone(&guard_active),
             rule.name.clone(),
             pixel_steps(rule),
             receiver,
+            inputs.clone(),
         ));
     }
 
     let mut matched_pixel_rules: HashSet<String> = HashSet::new();
     let mut held_pixel_rules: HashSet<String> = HashSet::new();
+    let mut failed_pixel_rules: HashSet<String> = HashSet::new();
     let poll_interval = Duration::from_millis(8);
     let mut next_poll = Instant::now();
 
     while !stop.load(Ordering::Relaxed) {
+        if !guard_active.load(Ordering::Relaxed) {
+            for rule in profile
+                .pixel_rules
+                .iter()
+                .filter(|rule| held_pixel_rules.contains(&rule.id))
+            {
+                release_pixel_rule(&app, rule, &inputs);
+            }
+            held_pixel_rules.clear();
+            matched_pixel_rules.clear();
+            thread::sleep(Duration::from_millis(20));
+            continue;
+        }
         for rule in profile.pixel_rules.iter().filter(|rule| rule.enabled) {
-            let matched = pixel_rule_matches(rule);
+            let matched = match pixel_rule_matches(rule) {
+                Ok(matched) => {
+                    if failed_pixel_rules.remove(&rule.id) {
+                        emit_event(
+                            &app,
+                            "pixel",
+                            format!("Pixel Trigger {} sampling recovered", rule.name),
+                        );
+                    }
+                    matched
+                }
+                Err(error) => {
+                    if failed_pixel_rules.insert(rule.id.clone()) {
+                        emit_event(
+                            &app,
+                            "error",
+                            format!("Pixel Trigger {}: {error}", rule.name),
+                        );
+                    }
+                    false
+                }
+            };
             let was_matched = matched_pixel_rules.contains(&rule.id);
             if matched {
                 matched_pixel_rules.insert(rule.id.clone());
@@ -291,10 +492,11 @@ fn pixel_detection_loop(app: AppHandle, profile: Profile, stop: Arc<AtomicBool>)
 
             if rule.trigger_mode == "hold" {
                 if matched && !held_pixel_rules.contains(&rule.id) {
-                    hold_pixel_rule(&app, rule);
-                    held_pixel_rules.insert(rule.id.clone());
+                    if hold_pixel_rule(&app, rule, &inputs) {
+                        held_pixel_rules.insert(rule.id.clone());
+                    }
                 } else if !matched && held_pixel_rules.contains(&rule.id) {
-                    release_pixel_rule(&app, rule);
+                    release_pixel_rule(&app, rule, &inputs);
                     held_pixel_rules.remove(&rule.id);
                 }
             } else if matched && (!was_matched || rule.continue_while_detected) {
@@ -320,11 +522,48 @@ fn pixel_detection_loop(app: AppHandle, profile: Profile, stop: Arc<AtomicBool>)
         .iter()
         .filter(|rule| rule.enabled && held_pixel_rules.contains(&rule.id))
     {
-        release_pixel_rule(&app, rule);
+        release_pixel_rule(&app, rule, &inputs);
     }
 }
 
-fn pixel_rule_matches(rule: &PixelRule) -> bool {
+pub fn test_pixel_rule(rule: &PixelRule) -> Result<bool, String> {
+    pixel_rule_matches(rule)
+}
+
+pub fn test_pixel_actions(app: &AppHandle, rule: &PixelRule) -> Result<(), String> {
+    let steps = pixel_steps(rule)
+        .into_iter()
+        .map(|mut step| {
+            step.press_duration.min_ms = step.press_duration.min_ms.min(500);
+            step.press_duration.max_ms = step.press_duration.max_ms.min(500);
+            step.humanized_delay.min_ms = step.humanized_delay.min_ms.min(1_000);
+            step.humanized_delay.max_ms = step.humanized_delay.max_ms.min(1_000);
+            step
+        })
+        .collect::<Vec<_>>();
+    if steps.is_empty() {
+        return Err("This rule has no actions to test".into());
+    }
+    for step in &steps {
+        if !input::supports_key(&step.key) {
+            return Err(format!("Unsupported action: {}", step.key));
+        }
+    }
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let guard_active = Arc::new(AtomicBool::new(true));
+    execute_action_chain(
+        app,
+        &format!("{} test", rule.name),
+        &steps,
+        &stop,
+        &guard_active,
+        &InputOwners::default(),
+    );
+    Ok(())
+}
+
+fn pixel_rule_matches(rule: &PixelRule) -> Result<bool, String> {
     let primary = condition_matches(&PixelCondition {
         target_color: rule.target_color.clone(),
         tolerance: rule.tolerance,
@@ -333,11 +572,16 @@ fn pixel_rule_matches(rule: &PixelRule) -> bool {
         invert_detection: rule.invert_detection,
     });
     let secondary_group = if rule.secondary_condition_enabled {
-        let secondary1 = condition_matches(&rule.secondary_condition);
+        let secondary1 = condition_matches(&rule.secondary_condition)?;
         let uses_or = rule.secondary_condition_operator.eq_ignore_ascii_case("or");
-        let secondary2 = rule.secondary_condition2_enabled
-            && !((uses_or && secondary1) || (!uses_or && !secondary1))
-            && condition_matches(&rule.secondary_condition2);
+        let secondary2 = if !rule.secondary_condition2_enabled
+            || (uses_or && secondary1)
+            || (!uses_or && !secondary1)
+        {
+            false
+        } else {
+            condition_matches(&rule.secondary_condition2)?
+        };
         combine_secondary_conditions(
             secondary1,
             rule.secondary_condition2_enabled,
@@ -347,7 +591,11 @@ fn pixel_rule_matches(rule: &PixelRule) -> bool {
     } else {
         true
     };
-    combine_conditions(primary, rule.secondary_condition_enabled, secondary_group)
+    Ok(combine_conditions(
+        primary?,
+        rule.secondary_condition_enabled,
+        secondary_group,
+    ))
 }
 
 fn combine_conditions(primary: bool, secondary_enabled: bool, secondary: bool) -> bool {
@@ -370,18 +618,19 @@ fn combine_secondary_conditions(
     }
 }
 
-fn condition_matches(condition: &PixelCondition) -> bool {
-    let raw_match = screen::sample_rule_points(condition.sample_point, condition.adjacent_pixels)
+fn condition_matches(condition: &PixelCondition) -> Result<bool, String> {
+    let samples = screen::sample_rule_points(condition.sample_point, condition.adjacent_pixels)
         .into_iter()
-        .filter_map(|point| screen::sample_pixel(point).ok())
-        .any(|sample| {
-            screen::color_matches(&sample.color, &condition.target_color, condition.tolerance)
-        });
-    if condition.invert_detection {
+        .map(screen::sample_pixel)
+        .collect::<Result<Vec<_>, _>>()?;
+    let raw_match = samples.iter().any(|sample| {
+        screen::color_matches(&sample.color, &condition.target_color, condition.tolerance)
+    });
+    Ok(if condition.invert_detection {
         !raw_match
     } else {
         raw_match
-    }
+    })
 }
 
 fn pixel_steps(rule: &PixelRule) -> Vec<MacroStep> {
@@ -412,16 +661,20 @@ fn pixel_steps(rule: &PixelRule) -> Vec<MacroStep> {
 fn spawn_action_worker(
     app: AppHandle,
     stop: Arc<AtomicBool>,
+    guard_active: Arc<AtomicBool>,
     rule_name: String,
     steps: Vec<MacroStep>,
     receiver: Receiver<()>,
+    inputs: InputOwners,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         while !stop.load(Ordering::Relaxed) {
             if receiver.recv_timeout(Duration::from_millis(25)).is_err() {
                 continue;
             }
-            execute_action_chain(&app, &rule_name, &steps, &stop);
+            if guard_active.load(Ordering::Relaxed) {
+                execute_action_chain(&app, &rule_name, &steps, &stop, &guard_active, &inputs);
+            }
         }
     })
 }
@@ -438,29 +691,39 @@ fn execute_action_chain(
     rule_name: &str,
     steps: &[MacroStep],
     stop: &Arc<AtomicBool>,
+    guard_active: &Arc<AtomicBool>,
+    inputs: &InputOwners,
 ) {
     for step in steps {
-        if stop.load(Ordering::Relaxed) {
+        if stop.load(Ordering::Relaxed) || !guard_active.load(Ordering::Relaxed) {
             break;
         }
         let press_ms = random_delay_ms(&step.press_duration);
-        if interruptible_tap(&step.key, press_ms, stop).is_ok() {
-            emit_event(
+        match interruptible_tap(&step.key, press_ms, stop, guard_active, inputs) {
+            Ok(()) => emit_event(
                 app,
                 "action",
                 format!("{rule_name} pressed {} for {} ms", step.key, press_ms),
-            );
+            ),
+            Err(error) if error != "Runtime stopped" => emit_event(app, "error", error),
+            Err(_) => {}
         }
-        if !interruptible_sleep(random_delay_ms(&step.humanized_delay), stop) {
+        if !interruptible_sleep(random_delay_ms(&step.humanized_delay), stop, guard_active) {
             break;
         }
     }
 }
 
-fn interruptible_tap(key: &str, press_ms: u64, stop: &Arc<AtomicBool>) -> Result<(), String> {
-    input::key_down(key)?;
-    let completed = interruptible_sleep(press_ms, stop);
-    let release_result = input::key_up(key);
+fn interruptible_tap(
+    key: &str,
+    press_ms: u64,
+    stop: &Arc<AtomicBool>,
+    guard_active: &Arc<AtomicBool>,
+    inputs: &InputOwners,
+) -> Result<(), String> {
+    inputs.acquire(key)?;
+    let completed = interruptible_sleep(press_ms, stop, guard_active);
+    let release_result = inputs.release(key);
     if completed {
         release_result
     } else {
@@ -468,9 +731,13 @@ fn interruptible_tap(key: &str, press_ms: u64, stop: &Arc<AtomicBool>) -> Result
     }
 }
 
-fn interruptible_sleep(duration_ms: u64, stop: &Arc<AtomicBool>) -> bool {
+fn interruptible_sleep(
+    duration_ms: u64,
+    stop: &Arc<AtomicBool>,
+    guard_active: &Arc<AtomicBool>,
+) -> bool {
     let deadline = Instant::now() + Duration::from_millis(duration_ms);
-    while !stop.load(Ordering::Relaxed) {
+    while !stop.load(Ordering::Relaxed) && guard_active.load(Ordering::Relaxed) {
         let now = Instant::now();
         if now >= deadline {
             return true;
@@ -480,21 +747,36 @@ fn interruptible_sleep(duration_ms: u64, stop: &Arc<AtomicBool>) -> bool {
     false
 }
 
-fn hold_pixel_rule(app: &AppHandle, rule: &PixelRule) {
+fn hold_pixel_rule(app: &AppHandle, rule: &PixelRule, inputs: &InputOwners) -> bool {
+    let mut acquired = Vec::new();
     for step in pixel_steps(rule) {
-        let _ = input::key_down(&step.key);
-        emit_event(app, "action", format!("{} holding {}", rule.name, step.key));
+        match inputs.acquire(&step.key) {
+            Ok(()) => {
+                acquired.push(step.key.clone());
+                emit_event(app, "action", format!("{} holding {}", rule.name, step.key));
+            }
+            Err(error) => {
+                emit_event(app, "error", error);
+                for key in acquired {
+                    let _ = inputs.release(&key);
+                }
+                return false;
+            }
+        }
     }
+    true
 }
 
-fn release_pixel_rule(app: &AppHandle, rule: &PixelRule) {
+fn release_pixel_rule(app: &AppHandle, rule: &PixelRule, inputs: &InputOwners) {
     for step in pixel_steps(rule) {
-        let _ = input::key_up(&step.key);
-        emit_event(
-            app,
-            "action",
-            format!("{} released {}", rule.name, step.key),
-        );
+        match inputs.release(&step.key) {
+            Ok(()) => emit_event(
+                app,
+                "action",
+                format!("{} released {}", rule.name, step.key),
+            ),
+            Err(error) => emit_event(app, "error", error),
+        }
     }
 }
 

@@ -4,9 +4,13 @@ mod windows_input {
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
         SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_KEYUP,
         MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP,
-        MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEINPUT, VK_CONTROL, VK_ESCAPE, VK_LBUTTON,
-        VK_MBUTTON, VK_MENU, VK_RBUTTON, VK_RETURN, VK_SHIFT, VK_SPACE, VK_TAB,
+        MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, MOUSEINPUT,
+        VK_CONTROL, VK_ESCAPE, VK_LBUTTON, VK_MBUTTON, VK_MENU, VK_RBUTTON, VK_RETURN, VK_SHIFT,
+        VK_SPACE, VK_TAB, VK_XBUTTON1, VK_XBUTTON2,
     };
+
+    const XBUTTON1_MOUSE_DATA: u32 = 0x0001;
+    const XBUTTON2_MOUSE_DATA: u32 = 0x0002;
 
     pub fn is_key_down(key: &str) -> bool {
         if let Some(vk) = virtual_key_code(key) {
@@ -31,22 +35,51 @@ mod windows_input {
         virtual_key_code(key).is_some()
     }
 
+    pub fn supported_key_names() -> Vec<String> {
+        let mut keys = ('A'..='Z')
+            .chain('0'..='9')
+            .map(|key| key.to_string())
+            .collect::<Vec<_>>();
+        keys.extend((1..=12).map(|number| format!("F{number}")));
+        keys.extend(
+            [
+                "SPACE",
+                "ENTER",
+                "ESC",
+                "TAB",
+                "SHIFT",
+                "CTRL",
+                "ALT",
+                "LEFT CLICK",
+                "RIGHT CLICK",
+                "MIDDLE CLICK",
+                "MOUSE 4",
+                "MOUSE 5",
+            ]
+            .into_iter()
+            .map(String::from),
+        );
+        keys
+    }
+
     fn send_down(key: &str) -> Result<(), String> {
         match input_code(key).ok_or_else(|| format!("Unsupported key: {key}"))? {
             InputCode::Keyboard(vk) => send_keyboard(vk, false),
-            InputCode::Mouse { down, .. } => send_mouse(down),
+            InputCode::Mouse {
+                down, mouse_data, ..
+            } => send_mouse(down, mouse_data),
         }
     }
 
     fn send_up(key: &str) -> Result<(), String> {
         match input_code(key).ok_or_else(|| format!("Unsupported key: {key}"))? {
             InputCode::Keyboard(vk) => send_keyboard(vk, true),
-            InputCode::Mouse { up, .. } => send_mouse(up),
+            InputCode::Mouse { up, mouse_data, .. } => send_mouse(up, mouse_data),
         }
     }
 
     fn send_keyboard(vk: u16, key_up: bool) -> Result<(), String> {
-        let mut input = INPUT {
+        let input = INPUT {
             r#type: INPUT_KEYBOARD,
             Anonymous: INPUT_0 {
                 ki: KEYBDINPUT {
@@ -59,7 +92,7 @@ mod windows_input {
             },
         };
 
-        let sent = unsafe { SendInput(1, &mut input, size_of::<INPUT>() as i32) };
+        let sent = unsafe { SendInput(1, &input, size_of::<INPUT>() as i32) };
         if sent == 1 {
             Ok(())
         } else {
@@ -67,14 +100,14 @@ mod windows_input {
         }
     }
 
-    fn send_mouse(flags: u32) -> Result<(), String> {
-        let mut input = INPUT {
+    fn send_mouse(flags: u32, mouse_data: u32) -> Result<(), String> {
+        let input = INPUT {
             r#type: INPUT_MOUSE,
             Anonymous: INPUT_0 {
                 mi: MOUSEINPUT {
                     dx: 0,
                     dy: 0,
-                    mouseData: 0,
+                    mouseData: mouse_data,
                     dwFlags: flags,
                     time: 0,
                     dwExtraInfo: 0,
@@ -82,7 +115,7 @@ mod windows_input {
             },
         };
 
-        let sent = unsafe { SendInput(1, &mut input, size_of::<INPUT>() as i32) };
+        let sent = unsafe { SendInput(1, &input, size_of::<INPUT>() as i32) };
         if sent == 1 {
             Ok(())
         } else {
@@ -92,7 +125,12 @@ mod windows_input {
 
     enum InputCode {
         Keyboard(u16),
-        Mouse { vk: u16, down: u32, up: u32 },
+        Mouse {
+            vk: u16,
+            down: u32,
+            up: u32,
+            mouse_data: u32,
+        },
     }
 
     fn virtual_key_code(key: &str) -> Option<u16> {
@@ -124,7 +162,7 @@ mod windows_input {
             "F10" => Some(InputCode::Keyboard(0x79)),
             "F11" => Some(InputCode::Keyboard(0x7A)),
             "F12" => Some(InputCode::Keyboard(0x7B)),
-            "SPACE" => Some(InputCode::Keyboard(VK_SPACE)),
+            "SPACE" | "SPACEBAR" => Some(InputCode::Keyboard(VK_SPACE)),
             "ENTER" => Some(InputCode::Keyboard(VK_RETURN)),
             "ESC" | "ESCAPE" => Some(InputCode::Keyboard(VK_ESCAPE)),
             "TAB" => Some(InputCode::Keyboard(VK_TAB)),
@@ -135,16 +173,31 @@ mod windows_input {
                 vk: VK_LBUTTON,
                 down: MOUSEEVENTF_LEFTDOWN,
                 up: MOUSEEVENTF_LEFTUP,
+                mouse_data: 0,
             }),
             "RIGHT CLICK" => Some(InputCode::Mouse {
                 vk: VK_RBUTTON,
                 down: MOUSEEVENTF_RIGHTDOWN,
                 up: MOUSEEVENTF_RIGHTUP,
+                mouse_data: 0,
             }),
             "MIDDLE CLICK" => Some(InputCode::Mouse {
                 vk: VK_MBUTTON,
                 down: MOUSEEVENTF_MIDDLEDOWN,
                 up: MOUSEEVENTF_MIDDLEUP,
+                mouse_data: 0,
+            }),
+            "MOUSE 4" | "XBUTTON1" => Some(InputCode::Mouse {
+                vk: VK_XBUTTON1,
+                down: MOUSEEVENTF_XDOWN,
+                up: MOUSEEVENTF_XUP,
+                mouse_data: XBUTTON1_MOUSE_DATA,
+            }),
+            "MOUSE 5" | "XBUTTON2" => Some(InputCode::Mouse {
+                vk: VK_XBUTTON2,
+                down: MOUSEEVENTF_XDOWN,
+                up: MOUSEEVENTF_XUP,
+                mouse_data: XBUTTON2_MOUSE_DATA,
             }),
             _ => None,
         }
@@ -168,6 +221,25 @@ mod windows_input {
     pub fn supports_key(_key: &str) -> bool {
         false
     }
+
+    pub fn supported_key_names() -> Vec<String> {
+        Vec::new()
+    }
 }
 
 pub use windows_input::*;
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn supports_common_aliases() {
+        assert!(supports_key("SPACE"));
+        assert!(supports_key("Spacebar"));
+        assert!(supports_key("MOUSE 4"));
+        assert!(supports_key("MOUSE 5"));
+        assert!(supports_key("XBUTTON1"));
+        assert!(supports_key("XBUTTON2"));
+    }
+}

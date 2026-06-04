@@ -1,15 +1,18 @@
 import { BellRing, Keyboard, Save } from 'lucide-react'
 import type { AppProfile } from '../../shared/types/profile'
+import type { ProfileStore } from '../../shared/types/profile'
 import { Button } from '../../shared/ui/Button'
 import { KeyCaptureButton } from '../../shared/ui/KeyCaptureButton'
+import { ProfileTransfer } from '../profile-transfer/ProfileTransfer'
 
 interface SettingsPanelProps {
   profile: AppProfile
   onProfileChange: (profile: AppProfile) => void
   onSaveProfile: () => void
+  onImported: (store: ProfileStore) => void
 }
 
-export function SettingsPanel({ profile, onProfileChange, onSaveProfile }: SettingsPanelProps) {
+export function SettingsPanel({ profile, onProfileChange, onSaveProfile, onImported }: SettingsPanelProps) {
   const updateRuntimeSettings = (runtimeSettings: AppProfile['runtimeSettings']) => {
     onProfileChange({ ...profile, runtimeSettings })
   }
@@ -19,7 +22,7 @@ export function SettingsPanel({ profile, onProfileChange, onSaveProfile }: Setti
       <section className="chain-header">
         <div>
           <h2>Settings</h2>
-          <p>Runtime controls for {profile.name}.</p>
+          <p>Automation preferences and profile transfer tools.</p>
         </div>
         <Button icon={Save} variant="primary" onClick={onSaveProfile}>Save settings</Button>
       </section>
@@ -28,15 +31,15 @@ export function SettingsPanel({ profile, onProfileChange, onSaveProfile }: Setti
         <div className="settings-card-heading">
           <Keyboard size={18} />
           <div>
-            <strong>Global runtime hotkey</strong>
-            <span>Works while Gaming Toolkit is minimized or another app has focus.</span>
+            <strong>Global start and stop shortcut</strong>
+            <span>Start or stop automation while Gaming Toolkit is minimized or another app is active.</span>
           </div>
         </div>
         <label>
-          Toggle Start / Stop
+          Shortcut
           <KeyCaptureButton
             value={profile.runtimeSettings.toggleHotkey}
-            label="Listen"
+            label="Change"
             onChange={(toggleHotkey) => updateRuntimeSettings({ ...profile.runtimeSettings, toggleHotkey })}
           />
         </label>
@@ -46,12 +49,12 @@ export function SettingsPanel({ profile, onProfileChange, onSaveProfile }: Setti
         <div className="settings-card-heading">
           <BellRing size={18} />
           <div>
-            <strong>Toggle sound</strong>
-            <span>Play a subtle system cue when the runtime starts or stops.</span>
+            <strong>Start and stop sound</strong>
+            <span>Play a subtle system sound when automation starts or stops.</span>
           </div>
         </div>
         <label className="switch-row">
-          <span>Sound enabled</span>
+          <span>Play sound</span>
           <input
             type="checkbox"
             checked={profile.runtimeSettings.soundEnabled}
@@ -59,6 +62,7 @@ export function SettingsPanel({ profile, onProfileChange, onSaveProfile }: Setti
           />
         </label>
       </section>
+      <ProfileTransfer profile={profile} onImported={onImported} />
     </div>
   )
 }

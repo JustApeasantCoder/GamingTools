@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Activity,
+  ChevronDown,
+  ChevronUp,
   Gamepad2,
   Keyboard,
   MousePointer2,
@@ -13,14 +14,19 @@ import './App.css'
 import { callBackend } from './shared/api/client'
 import type { AppProfile, MacroStep, PixelSampleRequest, ProfileStore } from './shared/types/profile'
 import { MacroBuilder } from './features/macros/MacroBuilder'
+import { MacroInspector } from './features/macros/MacroInspector'
+import { getProfileTimingIssues } from './features/macros/macroTiming'
 import { PixelTrigger } from './features/pixel-trigger/PixelTrigger'
+import { PixelActionInspector } from './features/pixel-trigger/PixelActionInspector'
+import { getPixelRuleIssues } from './features/pixel-trigger/pixelRuleValidation'
 import { ToggleHold } from './features/toggle-hold/ToggleHold'
+import { getToggleHoldRuleIssues } from './features/toggle-hold/toggleHoldValidation'
 import { ProfileRail } from './features/profiles/ProfileRail'
 import { Button } from './shared/ui/Button'
-import { KeyCaptureButton } from './shared/ui/KeyCaptureButton'
 import { SettingsPanel } from './features/settings/SettingsPanel'
+import { ProfileSettings } from './features/profiles/ProfileSettings'
 
-type FeatureTab = 'macros' | 'pixels' | 'toggleHold' | 'settings'
+type FeatureTab = 'macros' | 'pixels' | 'toggleHold' | 'profile' | 'settings'
 
 const defaultStore: ProfileStore = {
   activeProfileId: 'default',
@@ -33,7 +39,7 @@ const defaultStore: ProfileStore = {
         minMs: 100,
         maxMs: 220,
       },
-      runtimeSettings: { toggleHotkey: 'F4', soundEnabled: true },
+      runtimeSettings: { toggleHotkey: 'F4', soundEnabled: true, foregroundGuard: { enabled: false, executable: '', onFocusLost: 'pause' } },
       macroRules: [
         {
           id: 'macro-default',
@@ -86,7 +92,7 @@ const defaultStore: ProfileStore = {
           id: 'toggle-default',
           name: 'Right Click Hold',
           enabled: true,
-          triggerKey: 'RIGHT CLICK',
+          triggerKey: 'F8',
           holdKey: 'RIGHT CLICK',
         },
       ],
@@ -100,10 +106,20 @@ function App() {
   const [isRunning, setIsRunning] = useState(false)
   const [selectedMacroId, setSelectedMacroId] = useState<string>('macro-default')
   const [selectedMacroStepId, setSelectedMacroStepId] = useState<string>('step-b')
+  const [inspectorOpen, setInspectorOpen] = useState(false)
+  const [pixelInspectorOpen, setPixelInspectorOpen] = useState(false)
+  const [selectedPixelRuleId, setSelectedPixelRuleId] = useState<string>('pixel-default')
+  const [selectedPixelStepId, setSelectedPixelStepId] = useState<string>('pixel-step-q')
+  const [activityOpen, setActivityOpen] = useState(false)
+  const [overviewOpen, setOverviewOpen] = useState(false)
+  const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'error'>('saved')
   const didLoadProfiles = useRef(false)
+  const saveQueue = useRef<Promise<void>>(Promise.resolve())
+  const saveRevision = useRef(0)
+  const [persistenceError, setPersistenceError] = useState<string>()
   const [logLines, setLogLines] = useState<string[]>([
-    `${currentLogTime()} Ready. Global input monitoring enabled.`,
-    `${currentLogTime()} Profiles are stored in the app config folder.`,
+    `${currentLogTime()} Ready. Global hotkey monitoring is active.`,
+    `${currentLogTime()} Profile changes are saved automatically.`,
   ])
   const addLog = (message: string) => setLogLines((lines) => [`${currentLogTime()} ${message}`, ...lines].slice(0, 100))
 
@@ -117,6 +133,22 @@ function App() {
 
   const selectedStep = selectedMacro?.steps.find((step) => step.id === selectedMacroStepId)
     ?? selectedMacro?.steps[0]
+  const selectedPixelRule = activeProfile?.pixelRules.find((rule) => rule.id === selectedPixelRuleId)
+    ?? activeProfile?.pixelRules[0]
+  const selectedPixelStep = selectedPixelRule?.actionSteps.find((step) => step.id === selectedPixelStepId)
+    ?? selectedPixelRule?.actionSteps[0]
+  const timingIssues = activeProfile ? getProfileTimingIssues(activeProfile) : []
+  const pixelIssues = activeProfile?.pixelRules.filter((rule) => rule.enabled).flatMap(getPixelRuleIssues) ?? []
+  const toggleHoldRuleIssues = activeProfile?.toggleHoldRules.map((rule) => ({
+    rule,
+    issues: getToggleHoldRuleIssues(rule, activeProfile.runtimeSettings.toggleHotkey),
+  })) ?? []
+  const enabledToggleHoldIssues = toggleHoldRuleIssues.filter(({ rule }) => rule.enabled).flatMap(({ issues }) => issues)
+  const invalidToggleHoldRuleCount = toggleHoldRuleIssues.filter(({ issues }) => issues.length > 0).length
+  const enabledRuleCount = activeProfile
+    ? activeProfile.macroRules.filter((rule) => rule.enabled).length + activeProfile.pixelRules.filter((rule) => rule.enabled).length + activeProfile.toggleHoldRules.filter((rule) => rule.enabled).length
+    : 0
+  const startIssues = [...timingIssues.map((issue) => issue.message), ...pixelIssues, ...enabledToggleHoldIssues.map((issue) => issue.message)]
 
   useEffect(() => {
     if (didLoadProfiles.current) return
@@ -135,6 +167,7 @@ function App() {
       .catch(() => {
         addLog('Using local preview profile until Tauri backend is available.')
       })
+    callBackend<boolean>('is_runtime_running').then(setIsRunning).catch(() => undefined)
   }, [])
 
   useEffect(() => {
@@ -143,8 +176,8 @@ function App() {
     import('@tauri-apps/api/event')
       .then(({ listen }) => listen<{ kind: string; message: string }>('runtime-event', (event) => {
         addLog(event.payload.message)
-        if (event.payload.message.startsWith('Runtime started')) setIsRunning(true)
-        if (event.payload.message === 'Runtime stopped') setIsRunning(false)
+        if (event.payload.message.startsWith('Automation started')) setIsRunning(true)
+        if (event.payload.message.startsWith('Automation stopped')) setIsRunning(false)
       }))
       .then((dispose) => {
         if (cancelled) {
@@ -161,12 +194,30 @@ function App() {
   }, [])
 
   const persistProfile = async (profile: AppProfile) => {
+    const revision = ++saveRevision.current
+    setSaveStatus('saving')
     const nextStore = {
       ...store,
       profiles: store.profiles.map((item) => (item.id === profile.id ? profile : item)),
     }
     setStore(nextStore)
-    await callBackend('save_profile', { profile }).catch(() => undefined)
+    let saved = true
+    const operation = saveQueue.current.then(async () => {
+      try {
+        await callBackend('save_profile', { profile })
+        setPersistenceError(undefined)
+        if (saveRevision.current === revision) setSaveStatus('saved')
+      } catch (error) {
+        saved = false
+        const message = errorMessage(error)
+        setPersistenceError(message)
+        if (saveRevision.current === revision) setSaveStatus('error')
+        addLog(`Could not save ${profile.name}: ${message}`)
+      }
+    })
+    saveQueue.current = operation
+    await operation
+    return saved
   }
 
   const updateActiveProfile = async (profile: AppProfile) => {
@@ -175,12 +226,12 @@ function App() {
 
   const handleSaveActiveProfile = async () => {
     if (!activeProfile) return
-    await persistProfile(activeProfile)
-    addLog(`Saved profile: ${activeProfile.name}`)
+    if (await persistProfile(activeProfile)) addLog(`Saved profile: ${activeProfile.name}`)
   }
 
   const handleDeleteActiveProfile = async () => {
     if (!activeProfile || store.profiles.length <= 1) return
+    await saveQueue.current
     const fallbackStore = () => {
       const remainingProfiles = store.profiles.filter((profile) => profile.id !== activeProfile.id)
       return {
@@ -188,8 +239,13 @@ function App() {
         profiles: remainingProfiles.length > 0 ? remainingProfiles : store.profiles,
       }
     }
-    const backendStore = await callBackend<ProfileStore>('delete_profile', { profileId: activeProfile.id })
-      .catch(() => undefined)
+    let backendStore: ProfileStore | undefined
+    try {
+      backendStore = await callBackend<ProfileStore>('delete_profile', { profileId: activeProfile.id })
+    } catch (error) {
+      addLog(`Could not delete ${activeProfile.name}: ${errorMessage(error)}`)
+      return
+    }
     const nextStore = backendStore?.profiles?.length ? backendStore : fallbackStore()
     setStore(nextStore)
     const firstStepId = nextStore.profiles.find((profile) => profile.id === nextStore.activeProfileId)?.macroRules[0]?.steps[0]?.id
@@ -201,13 +257,19 @@ function App() {
 
   const handleDuplicateActiveProfile = async () => {
     if (!activeProfile) return
+    await saveQueue.current
     const duplicateProfile = duplicateProfileWithNewIds(activeProfile, store.profiles)
+    try {
+      await callBackend('save_profile', { profile: duplicateProfile })
+      await callBackend('set_active_profile', { profileId: duplicateProfile.id })
+    } catch (error) {
+      addLog(`Could not duplicate ${activeProfile.name}: ${errorMessage(error)}`)
+      return
+    }
     setStore((current) => ({
       activeProfileId: duplicateProfile.id,
       profiles: [...current.profiles, duplicateProfile],
     }))
-    await callBackend('save_profile', { profile: duplicateProfile }).catch(() => undefined)
-    await callBackend('set_active_profile', { profileId: duplicateProfile.id }).catch(() => undefined)
     const firstMacro = duplicateProfile.macroRules[0]
     if (firstMacro) setSelectedMacroId(firstMacro.id)
     if (firstMacro?.steps[0]) setSelectedMacroStepId(firstMacro.steps[0].id)
@@ -216,24 +278,38 @@ function App() {
 
   const handleStart = async () => {
     if (!activeProfile) return
-    await callBackend('start_runtime', { profileId: activeProfile.id })
-    setIsRunning(true)
+    if (!await persistProfile(activeProfile)) return
+    try {
+      await callBackend('start_runtime', { profileId: activeProfile.id })
+      setIsRunning(true)
+    } catch (error) {
+      addLog(`Could not start automation: ${errorMessage(error)}`)
+    }
   }
 
   const handleStop = async () => {
-    await callBackend('stop_runtime')
-    setIsRunning(false)
+    try {
+      await callBackend('stop_runtime')
+      setIsRunning(false)
+    } catch (error) {
+      addLog(`Could not stop automation: ${errorMessage(error)}`)
+    }
   }
 
   const handleProfileChange = async (profileId: string) => {
+    await saveQueue.current
     const nextProfile = store.profiles.find((profile) => profile.id === profileId)
-    const nextStore = { ...store, activeProfileId: profileId }
-    setStore(nextStore)
+    try {
+      await callBackend('set_active_profile', { profileId })
+    } catch (error) {
+      addLog(`Could not activate profile: ${errorMessage(error)}`)
+      return
+    }
+    setStore({ ...store, activeProfileId: profileId })
     if (nextProfile?.macroRules[0]) {
       setSelectedMacroId(nextProfile.macroRules[0].id)
       if (nextProfile.macroRules[0].steps[0]) setSelectedMacroStepId(nextProfile.macroRules[0].steps[0].id)
     }
-    await callBackend('set_active_profile', { profileId }).catch(() => undefined)
   }
 
   const handleSamplePixel = async (request: PixelSampleRequest) => {
@@ -248,13 +324,30 @@ function App() {
     return result
   }
 
+  const handleTestPixelRule = async (rule: AppProfile['pixelRules'][number]) => {
+    const matches = await callBackend<boolean>('test_pixel_rule', { rule })
+    addLog(`${rule.name} test: ${matches ? 'matching now' : 'not matching'}`)
+    return matches
+  }
+
+  const handleTestPixelActions = async (rule: AppProfile['pixelRules'][number]) => {
+    try {
+      await callBackend('test_pixel_actions', { rule })
+      addLog(`Tested actions for ${rule.name}`)
+    } catch (error) {
+      addLog(`Could not test ${rule.name}: ${errorMessage(error)}`)
+      throw error
+    }
+  }
+
   const handleAddProfile = async () => {
+    await saveQueue.current
     const id = crypto.randomUUID()
     const newProfile: AppProfile = {
       id,
       name: `Profile ${store.profiles.length + 1}`,
       defaultHumanization: { enabled: true, minMs: 90, maxMs: 180 },
-      runtimeSettings: { toggleHotkey: 'F4', soundEnabled: true },
+      runtimeSettings: { toggleHotkey: 'F4', soundEnabled: true, foregroundGuard: { enabled: false, executable: '', onFocusLost: 'pause' } },
       macroRules: [
         {
           id: crypto.randomUUID(),
@@ -267,9 +360,14 @@ function App() {
       pixelRules: [],
       toggleHoldRules: [],
     }
+    try {
+      await callBackend('save_profile', { profile: newProfile })
+      await callBackend('set_active_profile', { profileId: id })
+    } catch (error) {
+      addLog(`Could not add profile: ${errorMessage(error)}`)
+      return
+    }
     setStore((current) => ({ activeProfileId: id, profiles: [...current.profiles, newProfile] }))
-    await callBackend('save_profile', { profile: newProfile }).catch(() => undefined)
-    await callBackend('set_active_profile', { profileId: id }).catch(() => undefined)
   }
 
   const updateSelectedStep = (step: MacroStep) => {
@@ -283,6 +381,16 @@ function App() {
           ? { ...activeMacro, steps: activeMacro.steps.map((existingStep) => (existingStep.id === step.id ? step : existingStep)) }
           : item),
       ],
+    })
+  }
+
+  const updateSelectedPixelStep = (step: MacroStep) => {
+    if (!activeProfile || !selectedPixelRule) return
+    updateActiveProfile({
+      ...activeProfile,
+      pixelRules: activeProfile.pixelRules.map((rule) => rule.id === selectedPixelRule.id
+        ? { ...selectedPixelRule, actionSteps: selectedPixelRule.actionSteps.map((item) => item.id === step.id ? step : item) }
+        : rule),
     })
   }
 
@@ -311,6 +419,7 @@ function App() {
           </button>
           <button className={activeTab === 'toggleHold' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveTab('toggleHold')}>
             <ToggleRight size={18} /> Toggle Hold
+            {invalidToggleHoldRuleCount > 0 ? <span className="nav-count">{invalidToggleHoldRuleCount}</span> : null}
           </button>
         </nav>
 
@@ -323,40 +432,54 @@ function App() {
           onDuplicate={handleDuplicateActiveProfile}
           onDelete={handleDeleteActiveProfile}
           canDelete={store.profiles.length > 1}
+          isConfiguring={activeTab === 'profile'}
+          onConfigure={() => setActiveTab('profile')}
         />
 
         <div className="sidebar-footer">
           <button className={activeTab === 'settings' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveTab('settings')}>
             <Settings size={18} /> Settings
           </button>
-          <div className="connection"><span /> Backend connected</div>
+          <div className="connection"><span /> Foreground-only automation</div>
         </div>
       </aside>
 
-      <section className="workspace">
+      <section className={activityOpen || overviewOpen ? 'workspace activity-open' : 'workspace'}>
         <header className="topbar">
           <div className="status-block">
             <span className={isRunning ? 'status-dot running' : 'status-dot'} />
             <div>
               <strong>{isRunning ? 'Running' : 'Ready'}</strong>
-              <span>{isRunning ? `${activeProfile.name} is active` : 'No macros running'}</span>
+              <span>{persistenceError ? `Changes not saved: ${persistenceError}` : isRunning ? `${activeProfile.name} is active` : invalidToggleHoldRuleCount > 0 ? `${invalidToggleHoldRuleCount} Toggle Hold ${invalidToggleHoldRuleCount === 1 ? 'rule needs' : 'rules need'} attention` : startIssues.length > 0 ? `${enabledRuleCount} enabled rules · ${startIssues.length} need attention` : `${enabledRuleCount} enabled rules · Ready to start`}</span>
             </div>
           </div>
           <div className="runtime-actions">
-            <Button variant="primary" icon={Play} onClick={handleStart} disabled={isRunning}>Start</Button>
-            <Button variant="danger" icon={Square} onClick={handleStop} disabled={!isRunning}>Stop</Button>
+            <Button
+              variant="primary"
+              icon={Play}
+              onClick={handleStart}
+              disabled={isRunning || startIssues.length > 0}
+              title={startIssues[0]}
+            >
+              Start automation
+            </Button>
+            <Button variant="danger" icon={Square} onClick={handleStop} disabled={!isRunning}>Stop automation</Button>
           </div>
         </header>
 
-        <div className={activeTab === 'macros' ? 'content-grid' : 'content-grid content-grid-full'}>
+        <div className={activeTab === 'macros' || activeTab === 'pixels' ? 'content-grid' : 'content-grid content-grid-full'}>
           <section className="main-panel">
             {activeTab === 'macros' ? (
               <MacroBuilder
                 profile={activeProfile}
+                saveStatus={saveStatus}
                 selectedMacroId={selectedMacro?.id}
                 selectedStepId={selectedStep?.id}
                 onSelectedMacroChange={setSelectedMacroId}
-                onSelectedStepChange={setSelectedMacroStepId}
+                onSelectedStepChange={(stepId) => {
+                  setSelectedMacroStepId(stepId)
+                  setInspectorOpen(true)
+                }}
                 onProfileChange={updateActiveProfile}
               />
             ) : activeTab === 'pixels' ? (
@@ -365,9 +488,23 @@ function App() {
                 onProfileChange={updateActiveProfile}
                 onSamplePixel={handleSamplePixel}
                 onPickPixel={handlePickPixel}
+                onTestRule={handleTestPixelRule}
+                onTestActions={handleTestPixelActions}
+                selectedRuleId={selectedPixelRule?.id}
+                selectedStepId={selectedPixelStep?.id}
+                onSelectedRuleChange={setSelectedPixelRuleId}
+                onSelectedStepChange={(stepId) => {
+                  setSelectedPixelStepId(stepId)
+                  setPixelInspectorOpen(true)
+                }}
               />
             ) : activeTab === 'toggleHold' ? (
               <ToggleHold
+                profile={activeProfile}
+                onProfileChange={updateActiveProfile}
+              />
+            ) : activeTab === 'profile' ? (
+              <ProfileSettings
                 profile={activeProfile}
                 onProfileChange={updateActiveProfile}
               />
@@ -376,53 +513,62 @@ function App() {
                 profile={activeProfile}
                 onProfileChange={updateActiveProfile}
                 onSaveProfile={handleSaveActiveProfile}
+                onImported={(nextStore) => {
+                  setStore(nextStore)
+                  const imported = nextStore.profiles.find((profile) => profile.id === nextStore.activeProfileId)
+                  if (imported?.macroRules[0]) {
+                    setSelectedMacroId(imported.macroRules[0].id)
+                    if (imported.macroRules[0].steps[0]) setSelectedMacroStepId(imported.macroRules[0].steps[0].id)
+                  }
+                }}
               />
             )}
           </section>
 
-          {activeTab === 'macros' ? <aside className="inspector">
-            <div className="inspector-heading">
-              <span>Step Settings</span>
-              <strong>{selectedStep && selectedMacro ? `${selectedMacro.name} / Step ${selectedMacro.steps.findIndex((item) => item.id === selectedStep.id) + 1}` : 'No step'}</strong>
-            </div>
-            {selectedStep ? (
-              <div className="inspector-form">
-                <label>
-                  Key
-                  <KeyCaptureButton value={selectedStep.key} label="Listen" onChange={(key) => updateSelectedStep({ ...selectedStep, key })} />
-                </label>
-                <div className="two-col">
-                  <label>Press min ms<input type="number" value={selectedStep.pressDuration.minMs} onChange={(event) => updateSelectedStep({ ...selectedStep, pressDuration: { ...selectedStep.pressDuration, minMs: Number(event.target.value) } })} /></label>
-                  <label>Press max ms<input type="number" value={selectedStep.pressDuration.maxMs} onChange={(event) => updateSelectedStep({ ...selectedStep, pressDuration: { ...selectedStep.pressDuration, maxMs: Number(event.target.value) } })} /></label>
-                </div>
-                <label className="switch-row">
-                  <span>Humanized timing</span>
-                  <input type="checkbox" checked={selectedStep.humanizedDelay.enabled} onChange={(event) => updateSelectedStep({ ...selectedStep, humanizedDelay: { ...selectedStep.humanizedDelay, enabled: event.target.checked } })} />
-                </label>
-                <div className="two-col">
-                  <label>Min ms<input type="number" value={selectedStep.humanizedDelay.minMs} onChange={(event) => updateSelectedStep({ ...selectedStep, humanizedDelay: { ...selectedStep.humanizedDelay, minMs: Number(event.target.value) } })} /></label>
-                  <label>Max ms<input type="number" value={selectedStep.humanizedDelay.maxMs} onChange={(event) => updateSelectedStep({ ...selectedStep, humanizedDelay: { ...selectedStep.humanizedDelay, maxMs: Number(event.target.value) } })} /></label>
-                </div>
-                <div className="notice"><Activity size={16} /> Delay applies after key release before the next step.</div>
-              </div>
-            ) : null}
-          </aside> : null}
+          {activeTab === 'macros' ? (
+            <MacroInspector
+              macro={selectedMacro}
+              step={selectedStep}
+              open={inspectorOpen}
+              onClose={() => setInspectorOpen(false)}
+              onStepChange={updateSelectedStep}
+            />
+          ) : activeTab === 'pixels' ? (
+            <PixelActionInspector
+              rule={selectedPixelRule}
+              step={selectedPixelStep}
+              open={pixelInspectorOpen}
+              onClose={() => setPixelInspectorOpen(false)}
+              onStepChange={updateSelectedPixelStep}
+            />
+          ) : null}
         </div>
 
         <footer className="bottom-grid">
           <section className="log-panel">
-            <div className="panel-title">Execution Log</div>
-            {logLines.slice(0, 5).map((line, index) => (
+            <button className="log-toggle" onClick={() => setActivityOpen((open) => !open)} aria-expanded={activityOpen}>
+              <span className="panel-title">Activity Log</span>
+              <span className="latest-log">{logLines[0]}</span>
+              {activityOpen ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
+            </button>
+            {activityOpen ? logLines.slice(0, 5).map((line, index) => (
               <code key={`${line}-${index}`}>{line}</code>
-            ))}
+            )) : null}
           </section>
           <section className="stats-panel">
-            <div className="panel-title">Statistics</div>
-            <dl>
-              <dt>Macro rules</dt><dd>{activeProfile.macroRules.length}</dd>
-              <dt>Pixel rules</dt><dd>{activeProfile.pixelRules.length}</dd>
-              <dt>Runtime</dt><dd>{isRunning ? 'Active' : 'Idle'}</dd>
-            </dl>
+            <button className="log-toggle" onClick={() => setOverviewOpen((open) => !open)} aria-expanded={overviewOpen}>
+              <span className="panel-title">Overview</span>
+              <span className="latest-log">{enabledRuleCount} enabled rules · {isRunning ? 'Running' : 'Stopped'}</span>
+              {overviewOpen ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
+            </button>
+            {overviewOpen ? (
+              <dl>
+                <dt>Macros</dt><dd>{activeProfile.macroRules.length}</dd>
+                <dt>Pixel triggers</dt><dd>{activeProfile.pixelRules.length}</dd>
+                <dt>Toggle Hold</dt><dd>{activeProfile.toggleHoldRules.length}</dd>
+                <dt>Automation</dt><dd>{isRunning ? 'Running' : 'Stopped'}</dd>
+              </dl>
+            ) : null}
           </section>
         </footer>
       </section>
@@ -461,4 +607,8 @@ function duplicateProfileWithNewIds(profile: AppProfile, profiles: AppProfile[])
 
 function currentLogTime() {
   return new Date().toLocaleTimeString([], { hour12: false })
+}
+
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error)
 }

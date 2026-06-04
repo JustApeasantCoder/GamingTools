@@ -1,4 +1,4 @@
-import { Copy, Plus, Save, Trash2 } from 'lucide-react'
+import { Copy, Plus, Save, SlidersHorizontal, Trash2 } from 'lucide-react'
 import type { AppProfile } from '../../shared/types/profile'
 
 interface ProfileRailProps {
@@ -10,6 +10,8 @@ interface ProfileRailProps {
   onDuplicate: () => void
   onDelete: () => void
   canDelete: boolean
+  isConfiguring: boolean
+  onConfigure: () => void
 }
 
 export function ProfileRail({
@@ -21,6 +23,8 @@ export function ProfileRail({
   onDuplicate,
   onDelete,
   canDelete,
+  isConfiguring,
+  onConfigure,
 }: ProfileRailProps) {
   return (
     <section className="profiles-rail">
@@ -31,6 +35,14 @@ export function ProfileRail({
       <div className="profile-tools" aria-label="Active profile actions">
         <button className="profile-tool-button primary" aria-label="Save active profile" title="Save active profile" onClick={onSave}>
           <Save size={16} />
+        </button>
+        <button
+          className={isConfiguring ? 'profile-tool-button active' : 'profile-tool-button'}
+          aria-label="Configure active profile"
+          title="Configure active profile"
+          onClick={onConfigure}
+        >
+          <SlidersHorizontal size={16} />
         </button>
         <button className="profile-tool-button" aria-label="Duplicate active profile" title="Duplicate active profile" onClick={onDuplicate}>
           <Copy size={16} />
@@ -47,8 +59,7 @@ export function ProfileRail({
             onClick={() => onSelect(profile.id)}
           >
             <span className="profile-light" />
-            {profile.name}
-            <span className="profile-dot" />
+            <span className="profile-name">{profile.name}</span>
           </button>
         ))}
       </div>

@@ -117,6 +117,10 @@ pub fn color_matches(sample: &str, target: &str, tolerance: u8) -> bool {
         })
 }
 
+pub fn is_valid_hex_color(value: &str) -> bool {
+    parse_hex_color(value).is_some()
+}
+
 pub fn sample_rule_points(center: PixelPoint, adjacent: bool) -> Vec<PixelPoint> {
     if !adjacent {
         return vec![center];
@@ -171,5 +175,12 @@ mod tests {
         let points = sample_rule_points(PixelPoint { x: 10, y: 20 }, true);
         assert_eq!(points.len(), 5);
         assert!(points.contains(&PixelPoint { x: 10, y: 20 }));
+    }
+
+    #[test]
+    fn hex_color_validation_rejects_malformed_values() {
+        assert!(is_valid_hex_color("#34d399"));
+        assert!(!is_valid_hex_color("#xyzxyz"));
+        assert!(!is_valid_hex_color("#fff"));
     }
 }

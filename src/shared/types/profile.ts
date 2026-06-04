@@ -67,6 +67,11 @@ export interface AppProfile {
   runtimeSettings: {
     toggleHotkey: string
     soundEnabled: boolean
+    foregroundGuard: {
+      enabled: boolean
+      executable: string
+      onFocusLost: 'pause' | 'stop'
+    }
   }
   macroRules: MacroRule[]
   pixelRules: PixelRule[]
