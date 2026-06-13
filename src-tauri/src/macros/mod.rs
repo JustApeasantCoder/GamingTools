@@ -161,6 +161,114 @@ pub fn validate_profile(profile: &Profile) -> ValidationResult {
             &format!("{} hold action", rule.name),
             &mut errors,
         );
+        if !matches!(rule.release_mode.as_str(), "off" | "anyOther" | "specific") {
+            errors.push(format!("{} has an invalid auto-release mode", rule.name));
+        }
+        if rule.release_mode == "specific" {
+            validate_key(
+                &rule.release_key,
+                &format!("{} release input", rule.name),
+                &mut errors,
+            );
+            reject_toggle_conflict(
+                &rule.release_key,
+                toggle_hotkey,
+                &format!("{} release input", rule.name),
+                &mut errors,
+            );
+            if rule
+                .release_key
+                .trim()
+                .eq_ignore_ascii_case(&rule.trigger_key)
+            {
+                errors.push(format!("{} release input matches its trigger", rule.name));
+            }
+            if rule.release_key.trim().eq_ignore_ascii_case(&rule.hold_key) {
+                errors.push(format!(
+                    "{} release input matches its hold action",
+                    rule.name
+                ));
+            }
+        }
+    }
+
+    let mut trigger_owners = HashSet::new();
+    for (label, key) in profile
+        .macro_rules
+        .iter()
+        .filter(|rule| rule.enabled)
+        .map(|rule| {
+            (
+                format!("{} macro trigger", rule.name),
+                rule.trigger_key.as_str(),
+            )
+        })
+        .chain(
+            profile
+                .toggle_hold_rules
+                .iter()
+                .filter(|rule| rule.enabled)
+                .map(|rule| {
+                    (
+                        format!("{} toggle trigger", rule.name),
+                        rule.trigger_key.as_str(),
+                    )
+                }),
+        )
+        .chain(
+            profile
+                .inventory_stash_rules
+                .iter()
+                .filter(|rule| rule.enabled)
+                .map(|rule| {
+                    (
+                        format!("{} stash trigger", rule.name),
+                        rule.trigger_key.as_str(),
+                    )
+                }),
+        )
+    {
+        let normalized = key.trim().to_uppercase();
+        if !normalized.is_empty() && !trigger_owners.insert(normalized) {
+            errors.push(format!("{label} duplicates another automation trigger"));
+        }
+    }
+
+    for rule in profile
+        .inventory_stash_rules
+        .iter()
+        .filter(|rule| rule.enabled)
+    {
+        validate_id(&rule.id, "inventory stash rule", &mut ids, &mut errors);
+        validate_key(
+            &rule.trigger_key,
+            &format!("{} trigger", rule.name),
+            &mut errors,
+        );
+        reject_toggle_conflict(
+            &rule.trigger_key,
+            toggle_hotkey,
+            &format!("{} trigger", rule.name),
+            &mut errors,
+        );
+        if rule.columns == 0 || rule.rows == 0 {
+            errors.push(format!("{} grid must have rows and columns", rule.name));
+        }
+        if rule.grid.width <= 0 || rule.grid.height <= 0 {
+            errors.push(format!("{} grid size must be positive", rule.name));
+        }
+        if !screen::is_valid_hex_color(&rule.empty_color) {
+            errors.push(format!("{} has an invalid empty slot color", rule.name));
+        }
+        if !screen::is_valid_hex_color(&rule.waystone_color) {
+            errors.push(format!("{} has an invalid Waystone color", rule.name));
+        }
+        if rule.humanization.enabled && rule.humanization.min_ms > rule.humanization.max_ms {
+            errors.push(format!(
+                "{} humanized min ms is greater than max ms",
+                rule.name
+            ));
+        }
     }
 
     ValidationResult {

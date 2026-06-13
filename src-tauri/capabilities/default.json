@@ -3,9 +3,23 @@
   "identifier": "default",
   "description": "enables the default permissions",
   "windows": [
-    "main"
+    "main",
+    "inventory-overlay"
   ],
   "permissions": [
-    "core:default"
+    "core:default",
+    "core:webview:allow-create-webview-window",
+    "core:window:allow-close",
+    "core:window:allow-set-always-on-top",
+    "core:window:allow-set-background-color",
+    "core:window:allow-set-decorations",
+    "core:window:allow-set-focus",
+    "core:window:allow-set-position",
+    "core:window:allow-set-size",
+    "core:window:allow-show",
+    "core:window:allow-inner-position",
+    "core:window:allow-inner-size",
+    "core:window:allow-start-dragging",
+    "core:window:allow-start-resize-dragging"
   ]
 }

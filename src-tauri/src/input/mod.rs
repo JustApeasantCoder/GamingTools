@@ -1,6 +1,6 @@
 #[cfg(windows)]
 mod windows_input {
-    use std::mem::size_of;
+    use std::{mem::size_of, thread, time::Duration};
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
         SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_KEYUP,
         MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP,
@@ -8,9 +8,17 @@ mod windows_input {
         VK_CONTROL, VK_ESCAPE, VK_LBUTTON, VK_MBUTTON, VK_MENU, VK_RBUTTON, VK_RETURN, VK_SHIFT,
         VK_SPACE, VK_TAB, VK_XBUTTON1, VK_XBUTTON2,
     };
+    use windows_sys::Win32::UI::WindowsAndMessaging::SetCursorPos;
 
     const XBUTTON1_MOUSE_DATA: u32 = 0x0001;
     const XBUTTON2_MOUSE_DATA: u32 = 0x0002;
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct ClickTiming {
+        pub cursor_settle_ms: u64,
+        pub click_hold_ms: u64,
+        pub click_release_settle_ms: u64,
+    }
 
     pub fn is_key_down(key: &str) -> bool {
         if let Some(vk) = virtual_key_code(key) {
@@ -60,6 +68,26 @@ mod windows_input {
             .map(String::from),
         );
         keys
+    }
+
+    pub fn left_click_at(x: i32, y: i32, timing: ClickTiming) -> Result<(), String> {
+        unsafe {
+            if SetCursorPos(x, y) == 0 {
+                return Err("Unable to move cursor to inventory slot".into());
+            }
+        }
+        thread::sleep(Duration::from_millis(timing.cursor_settle_ms));
+
+        if let Err(error) = send_down("LEFT CLICK") {
+            return Err(error);
+        }
+        thread::sleep(Duration::from_millis(timing.click_hold_ms));
+        let result = send_up("LEFT CLICK");
+        if result.is_err() {
+            let _ = send_up("LEFT CLICK");
+        }
+        thread::sleep(Duration::from_millis(timing.click_release_settle_ms));
+        result
     }
 
     fn send_down(key: &str) -> Result<(), String> {
@@ -206,6 +234,13 @@ mod windows_input {
 
 #[cfg(not(windows))]
 mod windows_input {
+    #[derive(Clone, Copy, Debug)]
+    pub struct ClickTiming {
+        pub cursor_settle_ms: u64,
+        pub click_hold_ms: u64,
+        pub click_release_settle_ms: u64,
+    }
+
     pub fn is_key_down(_key: &str) -> bool {
         false
     }
@@ -224,6 +259,10 @@ mod windows_input {
 
     pub fn supported_key_names() -> Vec<String> {
         Vec::new()
+    }
+
+    pub fn left_click_at(_x: i32, _y: i32, _timing: ClickTiming) -> Result<(), String> {
+        Err("Mouse automation is only supported on Windows".into())
     }
 }
 

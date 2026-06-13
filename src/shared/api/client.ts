@@ -24,6 +24,10 @@ function previewResponse<T>(command: string, args?: Record<string, unknown>): Pr
     return Promise.resolve(true as T)
   }
 
+  if (command === 'test_inventory_stash_rule') {
+    return Promise.resolve(18 as T)
+  }
+
   if (command === 'validate_key_sequence') {
     return Promise.resolve({ valid: true, errors: [] } as T)
   }

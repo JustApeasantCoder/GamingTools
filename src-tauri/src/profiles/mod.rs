@@ -105,6 +105,48 @@ pub struct ToggleHoldRule {
     pub enabled: bool,
     pub trigger_key: String,
     pub hold_key: String,
+    #[serde(default = "default_toggle_release_mode")]
+    pub release_mode: String,
+    #[serde(default)]
+    pub release_key: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct InventoryGrid {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct InventoryStashRule {
+    pub id: String,
+    pub name: String,
+    pub enabled: bool,
+    pub trigger_key: String,
+    #[serde(default = "default_inventory_columns")]
+    pub columns: u8,
+    #[serde(default = "default_inventory_rows")]
+    pub rows: u8,
+    #[serde(default = "default_inventory_grid")]
+    pub grid: InventoryGrid,
+    #[serde(default = "default_inventory_empty_color")]
+    pub empty_color: String,
+    #[serde(default)]
+    pub ignore_waystone: bool,
+    #[serde(default = "default_inventory_waystone_color")]
+    pub waystone_color: String,
+    #[serde(default = "default_inventory_tolerance")]
+    pub tolerance: u8,
+    #[serde(default)]
+    pub ignored_slots: Vec<String>,
+    #[serde(default)]
+    pub waystone_slots: Vec<String>,
+    #[serde(default = "default_inventory_humanization")]
+    pub humanization: HumanizationSettings,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -119,6 +161,8 @@ pub struct Profile {
     pub pixel_rules: Vec<PixelRule>,
     #[serde(default)]
     pub toggle_hold_rules: Vec<ToggleHoldRule>,
+    #[serde(default)]
+    pub inventory_stash_rules: Vec<InventoryStashRule>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -291,6 +335,13 @@ fn regenerate_ids(profile: &mut Profile) {
     for rule in &mut profile.toggle_hold_rules {
         rule.id = uuid::Uuid::new_v4().to_string();
     }
+    for rule in &mut profile.inventory_stash_rules {
+        rule.id = uuid::Uuid::new_v4().to_string();
+    }
+}
+
+fn default_toggle_release_mode() -> String {
+    "off".into()
 }
 
 fn save_store_unlocked(app: &AppHandle, store: &ProfileStore) -> Result<(), String> {
@@ -317,6 +368,13 @@ fn store_lock() -> Result<std::sync::MutexGuard<'static, ()>, String> {
 fn normalize_store(mut store: ProfileStore) -> ProfileStore {
     if store.profiles.is_empty() {
         return default_store();
+    }
+    for profile in &mut store.profiles {
+        if profile.inventory_stash_rules.is_empty() {
+            profile
+                .inventory_stash_rules
+                .push(default_inventory_stash_rule());
+        }
     }
     if !store
         .profiles
@@ -401,6 +459,43 @@ fn default_condition_operator() -> String {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_inventory_columns() -> u8 {
+    12
+}
+
+fn default_inventory_rows() -> u8 {
+    5
+}
+
+fn default_inventory_grid() -> InventoryGrid {
+    InventoryGrid {
+        x: 34,
+        y: 37,
+        width: 844,
+        height: 352,
+    }
+}
+
+fn default_inventory_empty_color() -> String {
+    "#0f1110".into()
+}
+
+fn default_inventory_waystone_color() -> String {
+    "#7a52c8".into()
+}
+
+fn default_inventory_tolerance() -> u8 {
+    18
+}
+
+fn default_inventory_humanization() -> HumanizationSettings {
+    HumanizationSettings {
+        enabled: true,
+        min_ms: 120,
+        max_ms: 240,
+    }
 }
 
 fn default_store() -> ProfileStore {
@@ -503,8 +598,30 @@ fn default_store() -> ProfileStore {
                 enabled: true,
                 trigger_key: "F8".into(),
                 hold_key: "RIGHT CLICK".into(),
+                release_mode: default_toggle_release_mode(),
+                release_key: String::new(),
             }],
+            inventory_stash_rules: vec![default_inventory_stash_rule()],
         }],
+    }
+}
+
+fn default_inventory_stash_rule() -> InventoryStashRule {
+    InventoryStashRule {
+        id: "inventory-stash-default".into(),
+        name: "Inventory to stash".into(),
+        enabled: false,
+        trigger_key: "F6".into(),
+        columns: default_inventory_columns(),
+        rows: default_inventory_rows(),
+        grid: default_inventory_grid(),
+        empty_color: default_inventory_empty_color(),
+        ignore_waystone: false,
+        waystone_color: default_inventory_waystone_color(),
+        tolerance: default_inventory_tolerance(),
+        ignored_slots: Vec::new(),
+        waystone_slots: Vec::new(),
+        humanization: default_inventory_humanization(),
     }
 }
 
@@ -518,6 +635,22 @@ mod tests {
         let json = serde_json::to_string(&store).unwrap();
         let decoded: ProfileStore = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded, store);
+    }
+
+    #[test]
+    fn old_toggle_hold_rules_default_auto_release_to_off() {
+        let json = r#"{
+            "id":"toggle",
+            "name":"Hold",
+            "enabled":true,
+            "triggerKey":"F8",
+            "holdKey":"RIGHT CLICK"
+        }"#;
+
+        let rule: ToggleHoldRule = serde_json::from_str(json).unwrap();
+
+        assert_eq!(rule.release_mode, "off");
+        assert!(rule.release_key.is_empty());
     }
 
     #[test]
@@ -535,6 +668,7 @@ mod tests {
             macro_rules: vec![],
             pixel_rules: vec![],
             toggle_hold_rules: vec![],
+            inventory_stash_rules: vec![],
         });
         store.active_profile_id = "second".into();
 
@@ -574,6 +708,21 @@ mod tests {
         let result = crate::macros::validate_profile(&profile);
 
         assert!(result.valid);
+    }
+
+    #[test]
+    fn validation_rejects_conflicting_specific_release_input() {
+        let mut profile = default_store().profiles.remove(0);
+        profile.toggle_hold_rules[0].release_mode = "specific".into();
+        profile.toggle_hold_rules[0].release_key = "F8".into();
+
+        let result = crate::macros::validate_profile(&profile);
+
+        assert!(!result.valid);
+        assert!(result
+            .errors
+            .iter()
+            .any(|error| error.contains("release input matches its trigger")));
     }
 
     #[test]

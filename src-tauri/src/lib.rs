@@ -1,6 +1,7 @@
 mod commands;
 mod foreground;
 mod input;
+mod inventory;
 mod macros;
 mod profiles;
 mod recorder;
@@ -43,6 +44,7 @@ pub fn run() {
             commands::pick_pixel,
             commands::test_pixel_rule,
             commands::test_pixel_actions,
+            commands::test_inventory_stash_rule,
             commands::validate_key_sequence,
         ])
         .build(tauri::generate_context!())

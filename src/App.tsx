@@ -8,6 +8,7 @@ import {
   Play,
   Settings,
   Square,
+  Warehouse,
   ToggleRight,
 } from 'lucide-react'
 import './App.css'
@@ -21,12 +22,13 @@ import { PixelActionInspector } from './features/pixel-trigger/PixelActionInspec
 import { getPixelRuleIssues } from './features/pixel-trigger/pixelRuleValidation'
 import { ToggleHold } from './features/toggle-hold/ToggleHold'
 import { getToggleHoldRuleIssues } from './features/toggle-hold/toggleHoldValidation'
+import { InventoryStash } from './features/inventory-stash/InventoryStash'
 import { ProfileRail } from './features/profiles/ProfileRail'
 import { Button } from './shared/ui/Button'
 import { SettingsPanel } from './features/settings/SettingsPanel'
 import { ProfileSettings } from './features/profiles/ProfileSettings'
 
-type FeatureTab = 'macros' | 'pixels' | 'toggleHold' | 'profile' | 'settings'
+type FeatureTab = 'macros' | 'pixels' | 'toggleHold' | 'inventoryStash' | 'profile' | 'settings'
 
 const defaultStore: ProfileStore = {
   activeProfileId: 'default',
@@ -94,6 +96,26 @@ const defaultStore: ProfileStore = {
           enabled: true,
           triggerKey: 'F8',
           holdKey: 'RIGHT CLICK',
+          releaseMode: 'off',
+          releaseKey: '',
+        },
+      ],
+      inventoryStashRules: [
+        {
+          id: 'inventory-stash-default',
+          name: 'Inventory to stash',
+          enabled: false,
+          triggerKey: 'F6',
+          columns: 12,
+          rows: 5,
+          grid: { x: 34, y: 37, width: 844, height: 352 },
+          emptyColor: '#0f1110',
+          ignoreWaystone: false,
+          waystoneColor: '#7a52c8',
+          tolerance: 18,
+          ignoredSlots: [],
+          waystoneSlots: [],
+          humanization: { enabled: true, minMs: 120, maxMs: 240 },
         },
       ],
     },
@@ -146,7 +168,7 @@ function App() {
   const enabledToggleHoldIssues = toggleHoldRuleIssues.filter(({ rule }) => rule.enabled).flatMap(({ issues }) => issues)
   const invalidToggleHoldRuleCount = toggleHoldRuleIssues.filter(({ issues }) => issues.length > 0).length
   const enabledRuleCount = activeProfile
-    ? activeProfile.macroRules.filter((rule) => rule.enabled).length + activeProfile.pixelRules.filter((rule) => rule.enabled).length + activeProfile.toggleHoldRules.filter((rule) => rule.enabled).length
+    ? activeProfile.macroRules.filter((rule) => rule.enabled).length + activeProfile.pixelRules.filter((rule) => rule.enabled).length + activeProfile.toggleHoldRules.filter((rule) => rule.enabled).length + (activeProfile.inventoryStashRules ?? []).filter((rule) => rule.enabled).length
     : 0
   const startIssues = [...timingIssues.map((issue) => issue.message), ...pixelIssues, ...enabledToggleHoldIssues.map((issue) => issue.message)]
 
@@ -340,6 +362,12 @@ function App() {
     }
   }
 
+  const handleTestInventoryStashRule = async (rule: AppProfile['inventoryStashRules'][number]) => {
+    const count = await callBackend<number>('test_inventory_stash_rule', { rule })
+    addLog(`${rule.name} test: ${count} occupied slot${count === 1 ? '' : 's'} detected`)
+    return count
+  }
+
   const handleAddProfile = async () => {
     await saveQueue.current
     const id = crypto.randomUUID()
@@ -359,6 +387,7 @@ function App() {
       ],
       pixelRules: [],
       toggleHoldRules: [],
+      inventoryStashRules: [],
     }
     try {
       await callBackend('save_profile', { profile: newProfile })
@@ -420,6 +449,9 @@ function App() {
           <button className={activeTab === 'toggleHold' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveTab('toggleHold')}>
             <ToggleRight size={18} /> Toggle Hold
             {invalidToggleHoldRuleCount > 0 ? <span className="nav-count">{invalidToggleHoldRuleCount}</span> : null}
+          </button>
+          <button className={activeTab === 'inventoryStash' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveTab('inventoryStash')}>
+            <Warehouse size={18} /> Inventory Stash
           </button>
         </nav>
 
@@ -503,6 +535,14 @@ function App() {
                 profile={activeProfile}
                 onProfileChange={updateActiveProfile}
               />
+            ) : activeTab === 'inventoryStash' ? (
+              <InventoryStash
+                profile={activeProfile}
+                onProfileChange={updateActiveProfile}
+                onPickPixel={handlePickPixel}
+                onSamplePixel={handleSamplePixel}
+                onTestRule={handleTestInventoryStashRule}
+              />
             ) : activeTab === 'profile' ? (
               <ProfileSettings
                 profile={activeProfile}
@@ -566,6 +606,7 @@ function App() {
                 <dt>Macros</dt><dd>{activeProfile.macroRules.length}</dd>
                 <dt>Pixel triggers</dt><dd>{activeProfile.pixelRules.length}</dd>
                 <dt>Toggle Hold</dt><dd>{activeProfile.toggleHoldRules.length}</dd>
+                <dt>Inventory stash</dt><dd>{activeProfile.inventoryStashRules?.length ?? 0}</dd>
                 <dt>Automation</dt><dd>{isRunning ? 'Running' : 'Stopped'}</dd>
               </dl>
             ) : null}
@@ -602,6 +643,7 @@ function duplicateProfileWithNewIds(profile: AppProfile, profiles: AppProfile[])
       actionSteps: rule.actionSteps.map((step) => ({ ...step, id: crypto.randomUUID() })),
     })),
     toggleHoldRules: profile.toggleHoldRules.map((rule) => ({ ...rule, id: crypto.randomUUID() })),
+    inventoryStashRules: (profile.inventoryStashRules ?? []).map((rule) => ({ ...rule, id: crypto.randomUUID() })),
   }
 }
 

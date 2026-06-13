@@ -3,7 +3,7 @@ use tauri::{AppHandle, State};
 use crate::{
     input,
     macros::ValidationResult,
-    profiles::{self, PixelPoint, PixelRule, Profile, ProfileStore},
+    profiles::{self, InventoryStashRule, PixelPoint, PixelRule, Profile, ProfileStore},
     recorder::RecorderState,
     runtime::RuntimeState,
     screen::{self, PixelSample, PixelSampleRequest},
@@ -97,6 +97,11 @@ pub fn test_pixel_rule(rule: PixelRule) -> Result<bool, String> {
 #[tauri::command]
 pub fn test_pixel_actions(app: AppHandle, rule: PixelRule) -> Result<(), String> {
     crate::runtime::test_pixel_actions(&app, &rule)
+}
+
+#[tauri::command]
+pub fn test_inventory_stash_rule(rule: InventoryStashRule) -> Result<usize, String> {
+    crate::inventory::test_rule(&rule)
 }
 
 #[tauri::command]

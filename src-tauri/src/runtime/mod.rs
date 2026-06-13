@@ -13,9 +13,9 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::{
-    foreground, input,
+    foreground, input, inventory,
     macros::{random_delay_ms, validate_profile},
-    profiles::{MacroStep, PixelCondition, PixelRule, Profile},
+    profiles::{InventoryStashRule, MacroStep, PixelCondition, PixelRule, Profile, ToggleHoldRule},
     screen,
 };
 
@@ -289,6 +289,7 @@ fn input_detection_loop(
 ) {
     let mut worker_threads = Vec::new();
     let mut macro_workers = HashMap::new();
+    let mut inventory_workers = HashMap::new();
 
     for rule in profile.macro_rules.iter().filter(|rule| rule.enabled) {
         let (sender, receiver) = sync_channel(1);
@@ -303,10 +304,27 @@ fn input_detection_loop(
             inputs.clone(),
         ));
     }
+    for rule in profile
+        .inventory_stash_rules
+        .iter()
+        .filter(|rule| rule.enabled)
+    {
+        let (sender, receiver) = sync_channel(1);
+        inventory_workers.insert(rule.id.clone(), sender);
+        worker_threads.push(spawn_inventory_worker(
+            app.clone(),
+            Arc::clone(&stop),
+            Arc::clone(&guard_active),
+            rule.clone(),
+            receiver,
+        ));
+    }
 
     let mut pressed_triggers = HashSet::new();
     let mut toggle_waiting_for_release: HashSet<String> = HashSet::new();
     let mut toggle_held_rules: HashSet<String> = HashSet::new();
+    let supported_inputs = auto_release_input_names(&profile);
+    let mut pressed_inputs = currently_pressed_inputs(&supported_inputs);
     let poll_interval = Duration::from_millis(8);
     let mut next_poll = Instant::now();
 
@@ -322,8 +340,39 @@ fn input_detection_loop(
             toggle_held_rules.clear();
             pressed_triggers.clear();
             toggle_waiting_for_release.clear();
+            pressed_inputs = currently_pressed_inputs(&supported_inputs);
             thread::sleep(Duration::from_millis(20));
             continue;
+        }
+        let current_pressed_inputs = currently_pressed_inputs(&supported_inputs);
+        let newly_pressed_inputs = current_pressed_inputs
+            .difference(&pressed_inputs)
+            .cloned()
+            .collect::<HashSet<_>>();
+        pressed_inputs = current_pressed_inputs;
+
+        let auto_release_rule_ids = profile
+            .toggle_hold_rules
+            .iter()
+            .filter(|rule| rule.enabled && toggle_held_rules.contains(&rule.id))
+            .filter(|rule| should_auto_release_toggle(rule, &newly_pressed_inputs))
+            .map(|rule| rule.id.clone())
+            .collect::<Vec<_>>();
+        for rule_id in auto_release_rule_ids {
+            if let Some(rule) = profile
+                .toggle_hold_rules
+                .iter()
+                .find(|rule| rule.id == rule_id)
+            {
+                if inputs.release(&rule.hold_key).is_ok() {
+                    toggle_held_rules.remove(&rule.id);
+                    emit_event(
+                        &app,
+                        "toggleHold",
+                        format!("{} auto-released {}", rule.name, rule.hold_key),
+                    );
+                }
+            }
         }
         for rule in profile.macro_rules.iter().filter(|rule| rule.enabled) {
             let is_down = input::is_key_down(&rule.trigger_key);
@@ -342,6 +391,31 @@ fn input_detection_loop(
                 submit_action(&macro_workers, &rule.id);
             } else if !is_down && was_down {
                 pressed_triggers.remove(&rule.id);
+            }
+        }
+
+        for rule in profile
+            .inventory_stash_rules
+            .iter()
+            .filter(|rule| rule.enabled)
+        {
+            let is_down = input::is_key_down(&rule.trigger_key);
+            let trigger_id = format!("inventory:{}", rule.id);
+            let was_down = pressed_triggers.contains(&trigger_id);
+
+            if is_down && !was_down {
+                pressed_triggers.insert(trigger_id.clone());
+                emit_event(
+                    &app,
+                    "inventoryStash",
+                    format!(
+                        "Inventory stash shortcut pressed: {} ({})",
+                        rule.name, rule.trigger_key
+                    ),
+                );
+                submit_action(&inventory_workers, &rule.id);
+            } else if !is_down && was_down {
+                pressed_triggers.remove(&trigger_id);
             }
         }
 
@@ -397,6 +471,50 @@ fn input_detection_loop(
         .filter(|rule| rule.enabled && toggle_held_rules.contains(&rule.id))
     {
         let _ = inputs.release(&rule.hold_key);
+    }
+}
+
+fn currently_pressed_inputs(supported_inputs: &[String]) -> HashSet<String> {
+    supported_inputs
+        .iter()
+        .filter(|key| input::is_key_down(key))
+        .map(|key| key.trim().to_uppercase())
+        .collect()
+}
+
+fn auto_release_input_names(profile: &Profile) -> Vec<String> {
+    if profile
+        .toggle_hold_rules
+        .iter()
+        .any(|rule| rule.enabled && rule.release_mode == "anyOther")
+    {
+        return input::supported_key_names();
+    }
+
+    profile
+        .toggle_hold_rules
+        .iter()
+        .filter(|rule| rule.enabled && rule.release_mode == "specific")
+        .map(|rule| rule.release_key.trim().to_uppercase())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn should_auto_release_toggle(
+    rule: &ToggleHoldRule,
+    newly_pressed_inputs: &HashSet<String>,
+) -> bool {
+    match rule.release_mode.as_str() {
+        "specific" => newly_pressed_inputs.contains(&rule.release_key.trim().to_uppercase()),
+        "anyOther" => {
+            let trigger_key = rule.trigger_key.trim().to_uppercase();
+            let hold_key = rule.hold_key.trim().to_uppercase();
+            newly_pressed_inputs
+                .iter()
+                .any(|key| key != &trigger_key && key != &hold_key)
+        }
+        _ => false,
     }
 }
 
@@ -679,6 +797,38 @@ fn spawn_action_worker(
     })
 }
 
+fn spawn_inventory_worker(
+    app: AppHandle,
+    stop: Arc<AtomicBool>,
+    guard_active: Arc<AtomicBool>,
+    rule: InventoryStashRule,
+    receiver: Receiver<()>,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        while !stop.load(Ordering::Relaxed) {
+            if receiver.recv_timeout(Duration::from_millis(25)).is_err() {
+                continue;
+            }
+            if !guard_active.load(Ordering::Relaxed) {
+                continue;
+            }
+            match inventory::send_occupied_slots(&rule, &stop, &guard_active) {
+                Ok(sent) => emit_event(
+                    &app,
+                    "inventoryStash",
+                    format!(
+                        "{} sent {} slot{} to stash",
+                        rule.name,
+                        sent,
+                        if sent == 1 { "" } else { "s" }
+                    ),
+                ),
+                Err(error) => emit_event(&app, "error", format!("{}: {error}", rule.name)),
+            }
+        }
+    })
+}
+
 fn submit_action(workers: &HashMap<String, SyncSender<()>>, rule_id: &str) -> bool {
     if let Some(worker) = workers.get(rule_id) {
         return worker.try_send(()).is_ok();
@@ -808,7 +958,10 @@ fn play_toggle_sound(_is_on: bool, _enabled: bool) {}
 mod tests {
     use std::{collections::HashMap, sync::mpsc::sync_channel};
 
-    use super::{combine_conditions, combine_secondary_conditions, submit_action};
+    use super::{
+        combine_conditions, combine_secondary_conditions, should_auto_release_toggle, submit_action,
+    };
+    use crate::profiles::ToggleHoldRule;
 
     #[test]
     fn secondary_condition_behaves_as_an_and_gate() {
@@ -836,5 +989,29 @@ mod tests {
 
         assert!(submit_action(&workers, "rule"));
         assert!(!submit_action(&workers, "rule"));
+    }
+
+    #[test]
+    fn toggle_hold_auto_release_supports_specific_and_any_other_inputs() {
+        let mut rule = ToggleHoldRule {
+            id: "toggle".into(),
+            name: "Hold".into(),
+            enabled: true,
+            trigger_key: "F8".into(),
+            hold_key: "RIGHT CLICK".into(),
+            release_mode: "specific".into(),
+            release_key: "SPACE".into(),
+        };
+
+        assert!(should_auto_release_toggle(&rule, &["SPACE".into()].into()));
+        assert!(!should_auto_release_toggle(&rule, &["A".into()].into()));
+
+        rule.release_mode = "anyOther".into();
+        assert!(should_auto_release_toggle(&rule, &["A".into()].into()));
+        assert!(!should_auto_release_toggle(&rule, &["F8".into()].into()));
+        assert!(!should_auto_release_toggle(
+            &rule,
+            &["RIGHT CLICK".into()].into()
+        ));
     }
 }

@@ -45,6 +45,8 @@ export function ToggleHold({ profile, onProfileChange }: ToggleHoldProps) {
       enabled: true,
       triggerKey: 'F8',
       holdKey: 'RIGHT CLICK',
+      releaseMode: 'off',
+      releaseKey: '',
     }
     onProfileChange({ ...profile, toggleHoldRules: [...rules, nextRule] })
     setExpandedRuleIds((ids) => new Set(ids).add(nextRule.id))
@@ -106,7 +108,10 @@ export function ToggleHold({ profile, onProfileChange }: ToggleHoldProps) {
                   {expanded ? <ChevronDown size={17} /> : <ChevronRight size={17} />}
                   <span className="toggle-rule-identity">
                     <strong>{rule.name.trim() || 'Unnamed hold rule'}</strong>
-                    <span>Press {rule.triggerKey.trim() || 'Not selected'} to hold or release {rule.holdKey.trim() || 'Not selected'}</span>
+                    <span>
+                      Press {rule.triggerKey.trim() || 'Not selected'} to hold or release {rule.holdKey.trim() || 'Not selected'}
+                      {rule.releaseMode === 'anyOther' ? ' · Releases when another input is pressed' : rule.releaseMode === 'specific' ? ` · Releases on ${rule.releaseKey?.trim() || 'Not selected'}` : ''}
+                    </span>
                   </span>
                 </button>
                 <span className={issues.length > 0 ? 'rule-status issue' : rule.enabled ? 'rule-status enabled' : 'rule-status'}>
@@ -139,6 +144,22 @@ export function ToggleHold({ profile, onProfileChange }: ToggleHoldProps) {
                     <Button variant="ghost" onClick={() => updateRule({ ...rule, triggerKey: rule.holdKey, holdKey: rule.triggerKey })} disabled={!rule.triggerKey.trim() && !rule.holdKey.trim()}>
                       Swap
                     </Button>
+                  </div>
+                  <div className="toggle-rule-release">
+                    <label>
+                      Auto release
+                      <select value={rule.releaseMode ?? 'off'} onChange={(event) => updateRule({ ...rule, releaseMode: event.target.value as ToggleHoldRule['releaseMode'] })}>
+                        <option value="off">Only with the shortcut</option>
+                        <option value="anyOther">When any other input is pressed</option>
+                        <option value="specific">When a specific input is pressed</option>
+                      </select>
+                    </label>
+                    {rule.releaseMode === 'specific' ? (
+                      <label className={issues.some((issue) => issue.field === 'releaseKey') ? 'field-error' : undefined}>
+                        Release input
+                        <KeyCaptureButton value={rule.releaseKey ?? ''} onChange={(releaseKey) => updateRule({ ...rule, releaseKey })} />
+                      </label>
+                    ) : null}
                   </div>
                   {issues.length > 0 ? (
                     <div className="toggle-rule-errors" role="alert">

@@ -58,6 +58,30 @@ export interface ToggleHoldRule {
   enabled: boolean
   triggerKey: string
   holdKey: string
+  releaseMode: 'off' | 'anyOther' | 'specific'
+  releaseKey: string
+}
+
+export interface InventoryStashRule {
+  id: string
+  name: string
+  enabled: boolean
+  triggerKey: string
+  columns: number
+  rows: number
+  grid: {
+    x: number
+    y: number
+    width: number
+    height: number
+  }
+  emptyColor: string
+  ignoreWaystone: boolean
+  waystoneColor: string
+  tolerance: number
+  ignoredSlots: string[]
+  waystoneSlots: string[]
+  humanization: HumanizationSettings
 }
 
 export interface AppProfile {
@@ -76,6 +100,7 @@ export interface AppProfile {
   macroRules: MacroRule[]
   pixelRules: PixelRule[]
   toggleHoldRules: ToggleHoldRule[]
+  inventoryStashRules: InventoryStashRule[]
 }
 
 export interface ProfileStore {

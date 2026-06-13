@@ -36,6 +36,16 @@ body {
     linear-gradient(135deg, #10161b 0%, #0d1115 48%, #12181d 100%);
 }
 
+html.inventory-overlay-root,
+html.inventory-overlay-root body,
+html.inventory-overlay-root #root {
+  background: transparent !important;
+}
+
+html.inventory-overlay-root body {
+  overflow: hidden;
+}
+
 button,
 input,
 select,
@@ -992,6 +1002,17 @@ kbd {
   gap: 10px;
   color: #c3cbd1;
   font-size: 13px;
+}
+
+.toggle-rule-release {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(180px, 0.7fr);
+  gap: 12px;
+  align-items: end;
+}
+
+.toggle-rule-release > label {
+  min-width: 0;
 }
 
 .field-error input,
@@ -1982,6 +2003,249 @@ label small {
   font-size: 13px;
 }
 
+.inventory-stash {
+  gap: 16px;
+}
+
+.inventory-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(360px, 0.75fr);
+  gap: 16px;
+}
+
+.inventory-layout .workflow-section:nth-child(3) {
+  grid-column: 1 / -1;
+}
+
+.inventory-control-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(180px, 1fr));
+  align-items: end;
+  gap: 14px;
+}
+
+.inventory-control-grid.compact {
+  grid-template-columns: repeat(3, minmax(160px, 1fr));
+}
+
+.color-input-row {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 8px;
+}
+
+.inventory-button-stack {
+  display: flex;
+  align-items: end;
+  gap: 8px;
+}
+
+.inventory-button-stack .button {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.inventory-overlay-row {
+  display: grid;
+  grid-template-columns: minmax(360px, 1fr) minmax(260px, 340px);
+  gap: 16px;
+}
+
+.inventory-overlay-launcher {
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  min-height: 220px;
+  gap: 10px;
+  padding: 18px;
+  border: 1px dashed #3b4b56;
+  border-radius: 6px;
+  background: #10171d;
+  color: #cdd6dc;
+  text-align: center;
+}
+
+.inventory-overlay-launcher > svg {
+  color: #7fe9dd;
+}
+
+.inventory-overlay-launcher > span {
+  max-width: 420px;
+  color: #9ca8b1;
+  font-size: 13px;
+}
+
+.inventory-overlay-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.inventory-grid-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  align-content: start;
+  gap: 12px;
+}
+
+.inventory-ignore-grid {
+  display: grid;
+  gap: 6px;
+}
+
+.inventory-ignore-grid button {
+  display: grid;
+  place-items: center;
+  min-width: 0;
+  aspect-ratio: 1.35;
+  border: 1px solid #2c3943;
+  border-radius: 4px;
+  background: #172029;
+  color: #9ca8b1;
+  font-size: 11px;
+  cursor: pointer;
+  transition: border-color 140ms ease, background-color 140ms ease, color 140ms ease;
+}
+
+.inventory-ignore-grid button:hover {
+  border-color: #3b4b56;
+  background: #1d2730;
+}
+
+.inventory-ignore-grid button.ignored {
+  border-color: #774344;
+  background: #3a2427;
+  color: #ffd2d2;
+}
+
+.inventory-ignore-grid button.waystone {
+  border-color: #7651b8;
+  background: #302440;
+  color: #e5d8ff;
+}
+
+.inventory-screen-overlay {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  background: transparent;
+  color: #f3f7f8;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  user-select: none;
+}
+
+.inventory-screen-overlay.loading {
+  display: grid;
+  place-items: center;
+  background: rgba(13, 17, 21, 0.4);
+}
+
+.inventory-screen-grid {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  border: 0;
+  outline: 3px solid #f8ff64;
+  outline-offset: -3px;
+  background:
+    linear-gradient(rgba(0, 0, 0, 0.12), rgba(0, 0, 0, 0.12)),
+    rgba(85, 224, 208, 0.12);
+  box-shadow:
+    inset 0 0 0 2px rgba(0, 0, 0, 0.85),
+    0 0 0 2px rgba(0, 0, 0, 0.95),
+    0 0 22px rgba(248, 255, 100, 0.5);
+  cursor: move;
+}
+
+.inventory-screen-grid span {
+  position: relative;
+  border-right: 2px solid rgba(248, 255, 100, 0.88);
+  border-bottom: 2px solid rgba(85, 224, 208, 0.85);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.46);
+  background: rgba(5, 12, 14, 0.04);
+}
+
+.inventory-screen-grid span::after {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  border: 1px solid rgba(0, 0, 0, 0.8);
+  border-radius: 50%;
+  background: #ff5cf4;
+  box-shadow: 0 0 8px rgba(255, 92, 244, 0.85);
+  content: "";
+  transform: translate(-50%, -50%);
+}
+
+.inventory-screen-drag-label {
+  position: absolute;
+  left: 6px;
+  top: 6px;
+  z-index: 2;
+  min-height: 26px;
+  padding: 5px 9px;
+  border: 1px solid rgba(248, 255, 100, 0.75);
+  border-radius: 4px;
+  background: rgba(6, 13, 16, 0.9);
+  color: #f8ff64;
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+  pointer-events: none;
+}
+
+.inventory-screen-resize {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  z-index: 3;
+  width: 20px;
+  height: 20px;
+  border: 2px solid #071113;
+  border-radius: 50%;
+  background: #f8ff64;
+  box-shadow: 0 0 0 1px rgba(248, 255, 100, 0.5), 0 0 16px rgba(248, 255, 100, 0.6);
+  cursor: nwse-resize;
+}
+
+.inventory-screen-close {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  z-index: 4;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid rgba(255, 232, 232, 0.8);
+  border-radius: 4px;
+  background: rgba(58, 31, 34, 0.92);
+  cursor: pointer;
+}
+
+.inventory-screen-close::before,
+.inventory-screen-close::after {
+  position: absolute;
+  width: 12px;
+  height: 2px;
+  border-radius: 999px;
+  background: #ffe8e8;
+  content: "";
+}
+
+.inventory-screen-close::before {
+  transform: rotate(45deg);
+}
+
+.inventory-screen-close::after {
+  transform: rotate(-45deg);
+}
+
 .compact-preview {
   width: 34px;
   height: 34px;
@@ -2056,6 +2320,11 @@ label small {
     grid-template-columns: 1fr 1fr;
   }
 
+  .inventory-layout,
+  .inventory-overlay-row {
+    grid-template-columns: 1fr;
+  }
+
   .app-guard-card .settings-card-heading,
   .app-guard-card .notice {
     grid-column: 1 / -1;
@@ -2100,6 +2369,11 @@ label small {
   }
 
   .detection-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .inventory-control-grid,
+  .inventory-control-grid.compact {
     grid-template-columns: 1fr 1fr;
   }
 
@@ -2180,6 +2454,12 @@ label small {
     flex: 1 1 auto;
   }
 
+  .inventory-control-grid,
+  .inventory-control-grid.compact,
+  .inventory-grid-fields {
+    grid-template-columns: 1fr;
+  }
+
   .toggle-rule-header {
     grid-template-columns: minmax(0, 1fr) 36px 28px;
   }
@@ -2192,6 +2472,10 @@ label small {
   .toggle-rule-sentence .key-capture-button,
   .toggle-rule-sentence .button {
     width: 100%;
+  }
+
+  .toggle-rule-release {
+    grid-template-columns: 1fr;
   }
 
   .recorder-strip {
