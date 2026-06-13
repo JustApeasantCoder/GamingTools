@@ -15,7 +15,10 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::{
     foreground, input, inventory,
     macros::{random_delay_ms, validate_profile},
-    profiles::{InventoryStashRule, MacroStep, PixelCondition, PixelRule, Profile, ToggleHoldRule},
+    profiles::{
+        InventorySlotSnapshot, InventoryStashRule, MacroStep, PixelCondition, PixelRule, Profile,
+        ToggleHoldRule,
+    },
     screen,
 };
 
@@ -24,6 +27,10 @@ use crate::{
 struct RuntimeEvent {
     kind: String,
     message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rule_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    snapshot_colors: Option<Vec<InventorySlotSnapshot>>,
 }
 
 #[derive(Default)]
@@ -34,6 +41,7 @@ pub struct RuntimeState {
 struct RuntimeHandle {
     stop: Arc<AtomicBool>,
     thread: thread::JoinHandle<()>,
+    profile_id: String,
     sound_enabled: bool,
 }
 
@@ -52,15 +60,7 @@ impl RuntimeState {
 
         let profile_name = profile.name.clone();
         let sound_enabled = profile.runtime_settings.sound_enabled;
-        let stop = Arc::new(AtomicBool::new(false));
-        let thread_stop = Arc::clone(&stop);
-        let thread_app = app.clone();
-        let thread = thread::spawn(move || runtime_loop(thread_app, profile, thread_stop));
-        *guard = Some(RuntimeHandle {
-            stop,
-            thread,
-            sound_enabled,
-        });
+        *guard = Some(spawn_runtime(app.clone(), profile));
         emit_event(
             &app,
             "runtime",
@@ -69,6 +69,62 @@ impl RuntimeState {
         play_toggle_sound(true, sound_enabled);
         drop(guard);
         Ok(())
+    }
+
+    pub fn refresh_profile(&self, app: AppHandle, profile: Profile) -> Result<bool, String> {
+        let validation = validate_profile(&profile);
+        if !validation.valid {
+            return Err(validation.errors.join("; "));
+        }
+
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|_| "Runtime lock poisoned".to_string())?;
+        let Some(handle) = guard.as_ref() else {
+            return Ok(false);
+        };
+        if handle.profile_id != profile.id || handle.thread.is_finished() {
+            return Ok(false);
+        }
+
+        let profile_name = profile.name.clone();
+        stop_handle(guard.take());
+        *guard = Some(spawn_runtime(app.clone(), profile));
+        emit_event(
+            &app,
+            "runtime",
+            format!("Automation updated: {profile_name}"),
+        );
+        Ok(true)
+    }
+
+    pub fn refresh_running(&self, app: AppHandle, profile: Profile) -> Result<bool, String> {
+        let validation = validate_profile(&profile);
+        if !validation.valid {
+            return Err(validation.errors.join("; "));
+        }
+
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|_| "Runtime lock poisoned".to_string())?;
+        let Some(handle) = guard.as_ref() else {
+            return Ok(false);
+        };
+        if handle.thread.is_finished() {
+            return Ok(false);
+        }
+
+        let profile_name = profile.name.clone();
+        stop_handle(guard.take());
+        *guard = Some(spawn_runtime(app.clone(), profile));
+        emit_event(
+            &app,
+            "runtime",
+            format!("Automation updated: {profile_name}"),
+        );
+        Ok(true)
     }
 
     pub fn stop(&self, app: &AppHandle) -> Result<(), String> {
@@ -96,6 +152,20 @@ impl RuntimeState {
             .lock()
             .map_err(|_| "Runtime lock poisoned".to_string())?;
         Ok(stop_handle(guard.take()))
+    }
+}
+
+fn spawn_runtime(app: AppHandle, profile: Profile) -> RuntimeHandle {
+    let profile_id = profile.id.clone();
+    let sound_enabled = profile.runtime_settings.sound_enabled;
+    let stop = Arc::new(AtomicBool::new(false));
+    let thread_stop = Arc::clone(&stop);
+    let thread = thread::spawn(move || runtime_loop(app, profile, thread_stop));
+    RuntimeHandle {
+        stop,
+        thread,
+        profile_id,
+        sound_enabled,
     }
 }
 
@@ -290,6 +360,7 @@ fn input_detection_loop(
     let mut worker_threads = Vec::new();
     let mut macro_workers = HashMap::new();
     let mut inventory_workers = HashMap::new();
+    let mut inventory_snapshot_workers = HashMap::new();
 
     for rule in profile.macro_rules.iter().filter(|rule| rule.enabled) {
         let (sender, receiver) = sync_channel(1);
@@ -311,12 +382,15 @@ fn input_detection_loop(
     {
         let (sender, receiver) = sync_channel(1);
         inventory_workers.insert(rule.id.clone(), sender);
+        let (snapshot_sender, snapshot_receiver) = sync_channel(1);
+        inventory_snapshot_workers.insert(rule.id.clone(), snapshot_sender);
         worker_threads.push(spawn_inventory_worker(
             app.clone(),
             Arc::clone(&stop),
             Arc::clone(&guard_active),
             rule.clone(),
             receiver,
+            snapshot_receiver,
         ));
     }
 
@@ -416,6 +490,25 @@ fn input_detection_loop(
                 submit_action(&inventory_workers, &rule.id);
             } else if !is_down && was_down {
                 pressed_triggers.remove(&trigger_id);
+            }
+
+            let baseline_is_down = input::is_key_down(&rule.capture_baseline_key);
+            let baseline_trigger_id = format!("inventory-baseline:{}", rule.id);
+            let baseline_was_down = pressed_triggers.contains(&baseline_trigger_id);
+
+            if baseline_is_down && !baseline_was_down {
+                pressed_triggers.insert(baseline_trigger_id.clone());
+                emit_event(
+                    &app,
+                    "inventoryStash",
+                    format!(
+                        "Capture baseline shortcut pressed: {} ({})",
+                        rule.name, rule.capture_baseline_key
+                    ),
+                );
+                submit_action(&inventory_snapshot_workers, &rule.id);
+            } else if !baseline_is_down && baseline_was_down {
+                pressed_triggers.remove(&baseline_trigger_id);
             }
         }
 
@@ -801,29 +894,60 @@ fn spawn_inventory_worker(
     app: AppHandle,
     stop: Arc<AtomicBool>,
     guard_active: Arc<AtomicBool>,
-    rule: InventoryStashRule,
-    receiver: Receiver<()>,
+    mut rule: InventoryStashRule,
+    stash_receiver: Receiver<()>,
+    snapshot_receiver: Receiver<()>,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         while !stop.load(Ordering::Relaxed) {
-            if receiver.recv_timeout(Duration::from_millis(25)).is_err() {
-                continue;
+            if snapshot_receiver.try_recv().is_ok() {
+                if !guard_active.load(Ordering::Relaxed) {
+                    continue;
+                }
+                match inventory::capture_snapshot(&rule) {
+                    Ok(snapshot_colors) => {
+                        rule.detection_mode = "snapshot".into();
+                        rule.snapshot_colors = snapshot_colors.clone();
+                        emit_snapshot_event(
+                            &app,
+                            &rule.id,
+                            snapshot_colors,
+                            format!(
+                                "{} captured {} baseline slot{}",
+                                rule.name,
+                                rule.snapshot_colors.len(),
+                                if rule.snapshot_colors.len() == 1 {
+                                    ""
+                                } else {
+                                    "s"
+                                }
+                            ),
+                        );
+                    }
+                    Err(error) => emit_event(&app, "error", format!("{}: {error}", rule.name)),
+                }
             }
-            if !guard_active.load(Ordering::Relaxed) {
-                continue;
-            }
-            match inventory::send_occupied_slots(&rule, &stop, &guard_active) {
-                Ok(sent) => emit_event(
-                    &app,
-                    "inventoryStash",
-                    format!(
-                        "{} sent {} slot{} to stash",
-                        rule.name,
-                        sent,
-                        if sent == 1 { "" } else { "s" }
+
+            if stash_receiver
+                .recv_timeout(Duration::from_millis(25))
+                .is_ok()
+            {
+                if !guard_active.load(Ordering::Relaxed) {
+                    continue;
+                }
+                match inventory::send_occupied_slots(&rule, &stop, &guard_active) {
+                    Ok(sent) => emit_event(
+                        &app,
+                        "inventoryStash",
+                        format!(
+                            "{} sent {} slot{} to stash",
+                            rule.name,
+                            sent,
+                            if sent == 1 { "" } else { "s" }
+                        ),
                     ),
-                ),
-                Err(error) => emit_event(&app, "error", format!("{}: {error}", rule.name)),
+                    Err(error) => emit_event(&app, "error", format!("{}: {error}", rule.name)),
+                }
             }
         }
     })
@@ -936,6 +1060,25 @@ fn emit_event(app: &AppHandle, kind: &str, message: impl Into<String>) {
         RuntimeEvent {
             kind: kind.into(),
             message: message.into(),
+            rule_id: None,
+            snapshot_colors: None,
+        },
+    );
+}
+
+fn emit_snapshot_event(
+    app: &AppHandle,
+    rule_id: &str,
+    snapshot_colors: Vec<InventorySlotSnapshot>,
+    message: impl Into<String>,
+) {
+    let _ = app.emit(
+        "runtime-event",
+        RuntimeEvent {
+            kind: "inventorySnapshot".into(),
+            message: message.into(),
+            rule_id: Some(rule_id.into()),
+            snapshot_colors: Some(snapshot_colors),
         },
     );
 }

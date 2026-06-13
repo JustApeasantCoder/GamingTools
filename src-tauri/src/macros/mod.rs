@@ -220,11 +220,17 @@ pub fn validate_profile(profile: &Profile) -> ValidationResult {
                 .inventory_stash_rules
                 .iter()
                 .filter(|rule| rule.enabled)
-                .map(|rule| {
-                    (
-                        format!("{} stash trigger", rule.name),
-                        rule.trigger_key.as_str(),
-                    )
+                .flat_map(|rule| {
+                    [
+                        (
+                            format!("{} stash trigger", rule.name),
+                            rule.trigger_key.as_str(),
+                        ),
+                        (
+                            format!("{} capture baseline trigger", rule.name),
+                            rule.capture_baseline_key.as_str(),
+                        ),
+                    ]
                 }),
         )
     {
@@ -251,6 +257,33 @@ pub fn validate_profile(profile: &Profile) -> ValidationResult {
             &format!("{} trigger", rule.name),
             &mut errors,
         );
+        validate_key(
+            &rule.capture_baseline_key,
+            &format!("{} capture baseline trigger", rule.name),
+            &mut errors,
+        );
+        reject_toggle_conflict(
+            &rule.capture_baseline_key,
+            toggle_hotkey,
+            &format!("{} capture baseline trigger", rule.name),
+            &mut errors,
+        );
+        if rule
+            .capture_baseline_key
+            .trim()
+            .eq_ignore_ascii_case(&rule.trigger_key)
+        {
+            errors.push(format!(
+                "{} capture baseline trigger matches its stash trigger",
+                rule.name
+            ));
+        }
+        if !matches!(rule.detection_mode.as_str(), "emptyColor" | "snapshot") {
+            errors.push(format!(
+                "{} has an invalid inventory detection mode",
+                rule.name
+            ));
+        }
         if rule.columns == 0 || rule.rows == 0 {
             errors.push(format!("{} grid must have rows and columns", rule.name));
         }

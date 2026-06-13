@@ -45,6 +45,7 @@ pub fn run() {
             commands::test_pixel_rule,
             commands::test_pixel_actions,
             commands::test_inventory_stash_rule,
+            commands::capture_inventory_stash_snapshot,
             commands::validate_key_sequence,
         ])
         .build(tauri::generate_context!())

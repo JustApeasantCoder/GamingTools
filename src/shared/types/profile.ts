@@ -67,6 +67,8 @@ export interface InventoryStashRule {
   name: string
   enabled: boolean
   triggerKey: string
+  captureBaselineKey: string
+  detectionMode: 'emptyColor' | 'snapshot'
   columns: number
   rows: number
   grid: {
@@ -81,7 +83,13 @@ export interface InventoryStashRule {
   tolerance: number
   ignoredSlots: string[]
   waystoneSlots: string[]
+  snapshotColors: InventorySlotSnapshot[]
   humanization: HumanizationSettings
+}
+
+export interface InventorySlotSnapshot {
+  slot: string
+  color: string
 }
 
 export interface AppProfile {

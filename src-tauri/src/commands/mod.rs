@@ -3,7 +3,10 @@ use tauri::{AppHandle, State};
 use crate::{
     input,
     macros::ValidationResult,
-    profiles::{self, InventoryStashRule, PixelPoint, PixelRule, Profile, ProfileStore},
+    profiles::{
+        self, InventorySlotSnapshot, InventoryStashRule, PixelPoint, PixelRule, Profile,
+        ProfileStore,
+    },
     recorder::RecorderState,
     runtime::RuntimeState,
     screen::{self, PixelSample, PixelSampleRequest},
@@ -15,18 +18,50 @@ pub fn get_profiles(app: AppHandle) -> Result<ProfileStore, String> {
 }
 
 #[tauri::command]
-pub fn save_profile(app: AppHandle, profile: Profile) -> Result<ProfileStore, String> {
-    profiles::save_profile(&app, profile)
+pub fn save_profile(
+    app: AppHandle,
+    state: State<RuntimeState>,
+    profile: Profile,
+) -> Result<ProfileStore, String> {
+    let store = profiles::save_profile(&app, profile.clone())?;
+    state.refresh_profile(app, profile)?;
+    Ok(store)
 }
 
 #[tauri::command]
-pub fn delete_profile(app: AppHandle, profile_id: String) -> Result<ProfileStore, String> {
-    profiles::delete_profile(&app, profile_id)
+pub fn delete_profile(
+    app: AppHandle,
+    state: State<RuntimeState>,
+    profile_id: String,
+) -> Result<ProfileStore, String> {
+    let store = profiles::delete_profile(&app, profile_id)?;
+    if let Some(profile) = store
+        .profiles
+        .iter()
+        .find(|profile| profile.id == store.active_profile_id)
+        .cloned()
+    {
+        state.refresh_running(app, profile)?;
+    }
+    Ok(store)
 }
 
 #[tauri::command]
-pub fn set_active_profile(app: AppHandle, profile_id: String) -> Result<ProfileStore, String> {
-    profiles::set_active_profile(&app, profile_id)
+pub fn set_active_profile(
+    app: AppHandle,
+    state: State<RuntimeState>,
+    profile_id: String,
+) -> Result<ProfileStore, String> {
+    let store = profiles::set_active_profile(&app, profile_id)?;
+    if let Some(profile) = store
+        .profiles
+        .iter()
+        .find(|profile| profile.id == store.active_profile_id)
+        .cloned()
+    {
+        state.refresh_running(app, profile)?;
+    }
+    Ok(store)
 }
 
 #[tauri::command]
@@ -35,8 +70,21 @@ pub fn export_profile(app: AppHandle, profile_id: String) -> Result<String, Stri
 }
 
 #[tauri::command]
-pub fn import_profile(app: AppHandle, json: String) -> Result<ProfileStore, String> {
-    profiles::import_profile(&app, &json)
+pub fn import_profile(
+    app: AppHandle,
+    state: State<RuntimeState>,
+    json: String,
+) -> Result<ProfileStore, String> {
+    let store = profiles::import_profile(&app, &json)?;
+    if let Some(profile) = store
+        .profiles
+        .iter()
+        .find(|profile| profile.id == store.active_profile_id)
+        .cloned()
+    {
+        state.refresh_running(app, profile)?;
+    }
+    Ok(store)
 }
 
 #[tauri::command]
@@ -102,6 +150,13 @@ pub fn test_pixel_actions(app: AppHandle, rule: PixelRule) -> Result<(), String>
 #[tauri::command]
 pub fn test_inventory_stash_rule(rule: InventoryStashRule) -> Result<usize, String> {
     crate::inventory::test_rule(&rule)
+}
+
+#[tauri::command]
+pub fn capture_inventory_stash_snapshot(
+    rule: InventoryStashRule,
+) -> Result<Vec<InventorySlotSnapshot>, String> {
+    crate::inventory::capture_snapshot(&rule)
 }
 
 #[tauri::command]

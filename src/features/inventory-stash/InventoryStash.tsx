@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { emitTo, listen } from '@tauri-apps/api/event'
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow'
-import { Boxes, ExternalLink, Grid3X3, Pipette, Play, RefreshCw, X } from 'lucide-react'
+import { Boxes, Camera, ExternalLink, Grid3X3, Pipette, Play, RefreshCw, X } from 'lucide-react'
 import type { AppProfile, InventoryStashRule } from '../../shared/types/profile'
 import { Button } from '../../shared/ui/Button'
 import { KeyCaptureButton } from '../../shared/ui/KeyCaptureButton'
@@ -12,16 +12,19 @@ interface InventoryStashProps {
   onPickPixel: () => Promise<{ color: string; x: number; y: number }>
   onSamplePixel: (request: { x: number; y: number }) => Promise<{ color: string; x: number; y: number }>
   onTestRule: (rule: InventoryStashRule) => Promise<number>
+  onCaptureSnapshot: (rule: InventoryStashRule) => Promise<InventoryStashRule['snapshotColors']>
 }
 
-export function InventoryStash({ profile, onProfileChange, onPickPixel, onSamplePixel, onTestRule }: InventoryStashProps) {
+export function InventoryStash({ profile, onProfileChange, onPickPixel, onSamplePixel, onTestRule, onCaptureSnapshot }: InventoryStashProps) {
   const rule = normalizeRule(profile.inventoryStashRules?.[0])
   const [testState, setTestState] = useState<'idle' | 'testing' | 'ready' | 'error'>('idle')
+  const [captureState, setCaptureState] = useState<'idle' | 'capturing' | 'ready' | 'error'>('idle')
   const [occupiedCount, setOccupiedCount] = useState<number>()
   const [overlayOpen, setOverlayOpen] = useState(false)
   const [overlayError, setOverlayError] = useState<string>()
   const ruleRef = useRef(rule)
   const previewSlots = useMemo(() => createSlots(rule.columns, rule.rows), [rule.columns, rule.rows])
+  const isSnapshotMode = rule.detectionMode === 'snapshot'
 
   const updateRule = useCallback((nextRule: InventoryStashRule) => {
     onProfileChange({ ...profile, inventoryStashRules: [nextRule] })
@@ -106,6 +109,17 @@ export function InventoryStash({ profile, onProfileChange, onPickPixel, onSample
     }
   }
 
+  const captureSnapshot = async () => {
+    setCaptureState('capturing')
+    try {
+      const snapshotColors = await onCaptureSnapshot(rule)
+      updateRule({ ...rule, detectionMode: 'snapshot', snapshotColors })
+      setCaptureState('ready')
+    } catch {
+      setCaptureState('error')
+    }
+  }
+
   const openOverlay = async () => {
     setOverlayError(undefined)
     if (!hasTauriRuntime()) {
@@ -153,7 +167,7 @@ export function InventoryStash({ profile, onProfileChange, onPickPixel, onSample
             <span>{rule.enabled ? 'Included in automation' : 'Not included in automation'}</span>
             <span>{rule.triggerKey}</span>
             <span>{rule.columns} x {rule.rows}</span>
-            <span>{rule.ignoredSlots.length + rule.waystoneSlots.length} ignored</span>
+            <span>{isSnapshotMode ? `${rule.snapshotColors.length} saved` : `${rule.ignoredSlots.length + rule.waystoneSlots.length} ignored`}</span>
           </p>
         </div>
         <div className="toolbar-group">
@@ -165,26 +179,34 @@ export function InventoryStash({ profile, onProfileChange, onPickPixel, onSample
       <section className="inventory-layout">
         <section className="workflow-section">
           <header><span>1</span><div><h3>Stash shortcut</h3><p>Runs a foreground-only Ctrl + left click pass over occupied inventory slots.</p></div></header>
-          <div className="inventory-control-grid">
+          <div className="inventory-control-grid inventory-rule-grid">
             <label>Rule name<input value={rule.name} onChange={(event) => updateRule({ ...rule, name: event.target.value })} /></label>
             <label>Status<span className="editor-status-field"><span>{rule.enabled ? 'Included in automation' : 'Not included in automation'}</span><span className="switch-row compact"><input type="checkbox" checked={rule.enabled} onChange={(event) => updateRule({ ...rule, enabled: event.target.checked })} /></span></span></label>
             <label>Shortcut<KeyCaptureButton value={rule.triggerKey} onChange={(triggerKey) => updateRule({ ...rule, triggerKey })} label="Change shortcut" /></label>
+            <label>Detection mode<select value={rule.detectionMode} onChange={(event) => updateRule({ ...rule, detectionMode: event.target.value as InventoryStashRule['detectionMode'] })}><option value="emptyColor">Empty color</option><option value="snapshot">Snapshot compare</option></select></label>
           </div>
         </section>
 
         <section className="workflow-section">
-          <header><span>2</span><div><h3>Detection</h3><p>Slots matching the empty color are skipped; every other slot is treated as occupied.</p></div></header>
-          <div className="inventory-control-grid">
-            <label>Empty slot color<div className="color-input-row"><input type="color" value={rule.emptyColor} onChange={(event) => updateRule({ ...rule, emptyColor: event.target.value })} /><input value={rule.emptyColor} onChange={(event) => updateRule({ ...rule, emptyColor: event.target.value })} /></div></label>
-            <label>Tolerance<input type="number" min={0} max={255} value={rule.tolerance} onChange={(event) => updateRule({ ...rule, tolerance: Number(event.target.value) })} /></label>
-            <label>Ignore Waystone<span className="editor-status-field"><span>{rule.ignoreWaystone ? 'Enabled' : 'Disabled'}</span><span className="switch-row compact"><input type="checkbox" checked={rule.ignoreWaystone} onChange={(event) => updateRule({ ...rule, ignoreWaystone: event.target.checked })} /></span></span></label>
-            <label>Waystone color<div className="color-input-row"><input type="color" value={rule.waystoneColor} onChange={(event) => updateRule({ ...rule, waystoneColor: event.target.value })} /><input value={rule.waystoneColor} onChange={(event) => updateRule({ ...rule, waystoneColor: event.target.value })} /></div></label>
-            <div className="inventory-button-stack">
-              <Button icon={Pipette} onClick={pickEmptyColor}>Pick empty color</Button>
-              <Button icon={Pipette} onClick={pickWaystoneColor}>Pick Waystone</Button>
-              <Button icon={RefreshCw} onClick={sampleTopLeft}>Sample grid corner</Button>
+          <header><span>2</span><div><h3>Detection</h3><p>{isSnapshotMode ? 'Compares current slot-center colors against a captured baseline.' : 'Slots matching the empty color are skipped; every other slot is treated as occupied.'}</p></div></header>
+          {isSnapshotMode ? (
+            <div className="inventory-control-grid inventory-snapshot-grid">
+              <label>Tolerance<input type="number" min={0} max={255} value={rule.tolerance} onChange={(event) => updateRule({ ...rule, tolerance: Number(event.target.value) })} /></label>
+              <label>Snapshot<span className="editor-status-field"><span>{snapshotLabel(captureState, rule.snapshotColors.length)}</span><span>{rule.snapshotColors.length} / {rule.columns * rule.rows}</span></span></label>
             </div>
-          </div>
+          ) : (
+            <div className="inventory-control-grid">
+              <label>Empty slot color<div className="color-input-row"><input type="color" value={rule.emptyColor} onChange={(event) => updateRule({ ...rule, emptyColor: event.target.value })} /><input value={rule.emptyColor} onChange={(event) => updateRule({ ...rule, emptyColor: event.target.value })} /></div></label>
+              <label>Tolerance<input type="number" min={0} max={255} value={rule.tolerance} onChange={(event) => updateRule({ ...rule, tolerance: Number(event.target.value) })} /></label>
+              <label>Ignore Waystone<span className="editor-status-field"><span>{rule.ignoreWaystone ? 'Enabled' : 'Disabled'}</span><span className="switch-row compact"><input type="checkbox" checked={rule.ignoreWaystone} onChange={(event) => updateRule({ ...rule, ignoreWaystone: event.target.checked })} /></span></span></label>
+              {rule.ignoreWaystone ? <label>Waystone color<div className="color-input-row"><input type="color" value={rule.waystoneColor} onChange={(event) => updateRule({ ...rule, waystoneColor: event.target.value })} /><input value={rule.waystoneColor} onChange={(event) => updateRule({ ...rule, waystoneColor: event.target.value })} /></div></label> : null}
+              <div className="inventory-button-stack inventory-detection-actions">
+                <Button icon={Pipette} onClick={pickEmptyColor}>Pick empty color</Button>
+                {rule.ignoreWaystone ? <Button icon={Pipette} onClick={pickWaystoneColor}>Pick Waystone</Button> : null}
+                <Button icon={RefreshCw} onClick={sampleTopLeft}>Sample grid corner</Button>
+              </div>
+            </div>
+          )}
         </section>
 
         <section className="workflow-section">
@@ -206,20 +228,34 @@ export function InventoryStash({ profile, onProfileChange, onPickPixel, onSample
               <label>Width<input type="number" min={120} value={rule.grid.width} onChange={(event) => updateRule({ ...rule, grid: { ...rule.grid, width: Number(event.target.value) } })} /></label>
               <label>Height<input type="number" min={80} value={rule.grid.height} onChange={(event) => updateRule({ ...rule, grid: { ...rule.grid, height: Number(event.target.value) } })} /></label>
             </div>
+            <div className="inventory-mode-panel">
+              {!isSnapshotMode ? (
+                <>
+                  <header><span><Grid3X3 size={16} /></span><div><h3>Ignored slots</h3><p>Click once for always ignore; click twice for Waystone-only ignore.</p></div></header>
+                  <div className="inventory-ignore-grid" style={{ gridTemplateColumns: `repeat(${rule.columns}, 1fr)` }}>
+                    {previewSlots.map((slot) => {
+                      const ignored = rule.ignoredSlots.includes(slot)
+                      const waystone = rule.waystoneSlots.includes(slot)
+                      const [column, row] = slot.split(':').map(Number)
+                      return <button key={slot} className={waystone ? 'waystone' : ignored ? 'ignored' : ''} onClick={() => toggleIgnoredSlot(slot)}>{column + 1},{row + 1}</button>
+                    })}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <header><span><Camera size={16} /></span><div><h3>Snapshot baseline</h3><p>Recapture after moving the grid.</p></div></header>
+                  <div className="inventory-control-grid compact inventory-baseline-grid">
+                    <label>Captured slots<input readOnly value={`${rule.snapshotColors.length} / ${rule.columns * rule.rows}`} /></label>
+                    <label>Capture hotkey<KeyCaptureButton value={rule.captureBaselineKey} onChange={(captureBaselineKey) => updateRule({ ...rule, captureBaselineKey })} label="Change capture hotkey" /></label>
+                    <div className="inventory-button-stack">
+                      <Button icon={Camera} variant="primary" onClick={captureSnapshot} disabled={captureState === 'capturing'}>{captureState === 'capturing' ? 'Capturing...' : 'Capture baseline'}</Button>
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
           </div>
         </section>
-      </section>
-
-      <section className="workflow-section">
-        <header><span><Grid3X3 size={16} /></span><div><h3>Ignored slots</h3><p>Click once for always ignore; click twice for Waystone-only ignore.</p></div></header>
-        <div className="inventory-ignore-grid" style={{ gridTemplateColumns: `repeat(${rule.columns}, 1fr)` }}>
-          {previewSlots.map((slot) => {
-            const ignored = rule.ignoredSlots.includes(slot)
-            const waystone = rule.waystoneSlots.includes(slot)
-            const [column, row] = slot.split(':').map(Number)
-            return <button key={slot} className={waystone ? 'waystone' : ignored ? 'ignored' : ''} onClick={() => toggleIgnoredSlot(slot)}>{column + 1},{row + 1}</button>
-          })}
-        </div>
       </section>
 
       <section className="workflow-section">
@@ -262,12 +298,15 @@ function physicalGridToLogicalWindow(grid: InventoryStashRule['grid']) {
 }
 
 function normalizeRule(rule?: InventoryStashRule): InventoryStashRule {
-  const sanitizedRule = rule ?? {}
+  const sanitizedRule = { ...(rule ?? {}) } as Partial<InventoryStashRule> & { timing?: unknown }
+  delete sanitizedRule.timing
   const defaultRule: InventoryStashRule = {
     id: crypto.randomUUID(),
     name: 'Inventory to stash',
     enabled: false,
     triggerKey: 'F6',
+    captureBaselineKey: 'F8',
+    detectionMode: 'emptyColor',
     columns: 12,
     rows: 5,
     grid: { x: 34, y: 37, width: 844, height: 352 },
@@ -277,6 +316,7 @@ function normalizeRule(rule?: InventoryStashRule): InventoryStashRule {
     tolerance: 18,
     ignoredSlots: [],
     waystoneSlots: [],
+    snapshotColors: [],
     humanization: { enabled: true, minMs: 120, maxMs: 240 },
   }
   return {
@@ -285,6 +325,7 @@ function normalizeRule(rule?: InventoryStashRule): InventoryStashRule {
     grid: { ...defaultRule.grid, ...rule?.grid },
     ignoredSlots: rule?.ignoredSlots ?? defaultRule.ignoredSlots,
     waystoneSlots: rule?.waystoneSlots ?? defaultRule.waystoneSlots,
+    snapshotColors: rule?.snapshotColors ?? defaultRule.snapshotColors,
     humanization: { ...defaultRule.humanization, ...rule?.humanization },
   }
 }
@@ -304,4 +345,11 @@ function testLabel(state: 'idle' | 'testing' | 'ready' | 'error', count?: number
   if (state === 'ready') return `${count ?? 0} occupied`
   if (state === 'error') return 'Target unavailable'
   return 'Not tested'
+}
+
+function snapshotLabel(state: 'idle' | 'capturing' | 'ready' | 'error', count: number) {
+  if (state === 'capturing') return 'Capturing...'
+  if (state === 'error') return 'Capture failed'
+  if (count > 0) return `${count} saved`
+  return 'No snapshot'
 }

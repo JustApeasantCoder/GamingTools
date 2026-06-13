@@ -2028,6 +2028,14 @@ label small {
   grid-template-columns: repeat(3, minmax(160px, 1fr));
 }
 
+.inventory-rule-grid {
+  grid-template-columns: repeat(4, minmax(160px, 1fr));
+}
+
+.inventory-snapshot-grid {
+  grid-template-columns: minmax(180px, 0.7fr) minmax(260px, 1fr);
+}
+
 .color-input-row {
   display: grid;
   grid-template-columns: 72px minmax(0, 1fr);
@@ -2045,9 +2053,20 @@ label small {
   min-width: 0;
 }
 
+.inventory-detection-actions {
+  grid-column: span 2;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.inventory-detection-actions .button {
+  flex: 1 1 150px;
+}
+
 .inventory-overlay-row {
   display: grid;
-  grid-template-columns: minmax(360px, 1fr) minmax(260px, 340px);
+  grid-template-columns: minmax(300px, 0.9fr) minmax(220px, 300px) minmax(280px, 0.8fr);
+  align-items: start;
   gap: 16px;
 }
 
@@ -2055,7 +2074,7 @@ label small {
   display: grid;
   align-content: center;
   justify-items: center;
-  min-height: 220px;
+  min-height: 196px;
   gap: 10px;
   padding: 18px;
   border: 1px dashed #3b4b56;
@@ -2091,9 +2110,70 @@ label small {
   gap: 12px;
 }
 
+.inventory-mode-panel {
+  display: grid;
+  align-self: center;
+  gap: 12px;
+  min-width: 0;
+  padding-top: 2px;
+}
+
+.inventory-mode-panel > header {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+}
+
+.inventory-mode-panel > header > span {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid #2c3943;
+  border-radius: 6px;
+  background: #111a22;
+  color: #7fe9dd;
+}
+
+.inventory-mode-panel h3 {
+  margin: 0;
+  color: #eef6f8;
+  font-size: 14px;
+}
+
+.inventory-mode-panel p {
+  margin: 3px 0 0;
+  color: #9ca8b1;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.inventory-mode-panel .inventory-control-grid,
+.inventory-mode-panel .inventory-control-grid.compact {
+  grid-template-columns: 1fr;
+}
+
+.inventory-mode-panel .inventory-control-grid.inventory-baseline-grid {
+  grid-template-columns: minmax(120px, 0.7fr) minmax(160px, 1fr);
+}
+
+.inventory-mode-panel .inventory-control-grid.inventory-baseline-grid .inventory-button-stack {
+  grid-column: 1 / -1;
+}
+
+.inventory-mode-panel .inventory-button-stack {
+  align-items: stretch;
+  flex-direction: column;
+}
+
+.inventory-mode-panel .inventory-button-stack .button {
+  width: 100%;
+}
+
 .inventory-ignore-grid {
   display: grid;
-  gap: 6px;
+  gap: 4px;
 }
 
 .inventory-ignore-grid button {
@@ -2105,7 +2185,7 @@ label small {
   border-radius: 4px;
   background: #172029;
   color: #9ca8b1;
-  font-size: 11px;
+  font-size: 10px;
   cursor: pointer;
   transition: border-color 140ms ease, background-color 140ms ease, color 140ms ease;
 }
@@ -2320,8 +2400,7 @@ label small {
     grid-template-columns: 1fr 1fr;
   }
 
-  .inventory-layout,
-  .inventory-overlay-row {
+  .inventory-layout {
     grid-template-columns: 1fr;
   }
 
@@ -2375,6 +2454,10 @@ label small {
   .inventory-control-grid,
   .inventory-control-grid.compact {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .inventory-overlay-row {
+    grid-template-columns: 1fr;
   }
 
   .condition-editor-grid,
@@ -2458,6 +2541,10 @@ label small {
   .inventory-control-grid.compact,
   .inventory-grid-fields {
     grid-template-columns: 1fr;
+  }
+
+  .inventory-detection-actions {
+    grid-column: span 1;
   }
 
   .toggle-rule-header {

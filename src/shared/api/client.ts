@@ -28,6 +28,17 @@ function previewResponse<T>(command: string, args?: Record<string, unknown>): Pr
     return Promise.resolve(18 as T)
   }
 
+  if (command === 'capture_inventory_stash_snapshot') {
+    const rule = args?.rule as { columns?: number; rows?: number } | undefined
+    const columns = rule?.columns ?? 12
+    const rows = rule?.rows ?? 5
+    const snapshots = Array.from({ length: columns * rows }, (_, index) => ({
+      slot: `${index % columns}:${Math.floor(index / columns)}`,
+      color: index % 2 === 0 ? '#0f1110' : '#151923',
+    }))
+    return Promise.resolve(snapshots as T)
+  }
+
   if (command === 'validate_key_sequence') {
     return Promise.resolve({ valid: true, errors: [] } as T)
   }

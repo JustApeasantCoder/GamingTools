@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -10,7 +10,7 @@ use std::{
 use crate::{
     input,
     macros::random_delay_ms,
-    profiles::{InventoryStashRule, PixelPoint},
+    profiles::{InventorySlotSnapshot, InventoryStashRule, PixelPoint},
     screen,
 };
 
@@ -29,6 +29,7 @@ pub fn send_occupied_slots(
     let slots = inventory_slots(rule)?;
     let ignored = ignored_slot_set(rule);
     let waystone_slots = waystone_slot_set(rule);
+    let snapshot_colors = snapshot_color_map(rule);
     let mut sent = 0;
 
     let mut ctrl_guard = HeldInput::new("CTRL")?;
@@ -40,19 +41,7 @@ pub fn send_occupied_slots(
         if stop.load(Ordering::Relaxed) || !guard_active.load(Ordering::Relaxed) {
             break;
         }
-        if ignored.contains(&(slot.column, slot.row)) {
-            continue;
-        }
-        if waystone_slots.contains(&(slot.column, slot.row))
-            && slot_matches_waystone(rule, slot.center)?
-        {
-            continue;
-        }
-        let occupied = match slot_is_occupied(rule, slot.center) {
-            Ok(occupied) => occupied,
-            Err(error) => return Err(error),
-        };
-        if !occupied {
+        if !slot_should_stash(rule, &slot, &ignored, &waystone_slots, &snapshot_colors)? {
             continue;
         }
 
@@ -81,17 +70,26 @@ pub fn send_occupied_slots(
 pub fn test_rule(rule: &InventoryStashRule) -> Result<usize, String> {
     let ignored = ignored_slot_set(rule);
     let waystone_slots = waystone_slot_set(rule);
+    let snapshot_colors = snapshot_color_map(rule);
     inventory_slots(rule)?
         .into_iter()
-        .filter(|slot| !ignored.contains(&(slot.column, slot.row)))
         .try_fold(0usize, |count, slot| {
-            if waystone_slots.contains(&(slot.column, slot.row))
-                && slot_matches_waystone(rule, slot.center)?
-            {
-                return Ok(count);
-            }
-            slot_is_occupied(rule, slot.center).map(|occupied| count + usize::from(occupied))
+            slot_should_stash(rule, &slot, &ignored, &waystone_slots, &snapshot_colors)
+                .map(|should_stash| count + usize::from(should_stash))
         })
+}
+
+pub fn capture_snapshot(rule: &InventoryStashRule) -> Result<Vec<InventorySlotSnapshot>, String> {
+    inventory_slots(rule)?
+        .into_iter()
+        .map(|slot| {
+            let sample = screen::sample_pixel(slot.center)?;
+            Ok(InventorySlotSnapshot {
+                slot: slot_id(slot.column, slot.row),
+                color: sample.color,
+            })
+        })
+        .collect()
 }
 
 pub fn inventory_slots(rule: &InventoryStashRule) -> Result<Vec<InventorySlot>, String> {
@@ -142,12 +140,53 @@ pub fn slot_matches_waystone(rule: &InventoryStashRule, point: PixelPoint) -> Re
     ))
 }
 
+fn slot_should_stash(
+    rule: &InventoryStashRule,
+    slot: &InventorySlot,
+    ignored: &HashSet<(u8, u8)>,
+    waystone_slots: &HashSet<(u8, u8)>,
+    snapshot_colors: &HashMap<String, String>,
+) -> Result<bool, String> {
+    if rule.detection_mode == "snapshot" {
+        let Some(saved_color) = snapshot_colors.get(&slot_id(slot.column, slot.row)) else {
+            return Ok(false);
+        };
+        let sample = screen::sample_pixel(slot.center)?;
+        return Ok(!screen::color_matches(
+            &sample.color,
+            saved_color,
+            rule.tolerance,
+        ));
+    }
+
+    if ignored.contains(&(slot.column, slot.row)) {
+        return Ok(false);
+    }
+    if waystone_slots.contains(&(slot.column, slot.row))
+        && slot_matches_waystone(rule, slot.center)?
+    {
+        return Ok(false);
+    }
+    slot_is_occupied(rule, slot.center)
+}
+
 fn ignored_slot_set(rule: &InventoryStashRule) -> HashSet<(u8, u8)> {
     slot_set(&rule.ignored_slots)
 }
 
 fn waystone_slot_set(rule: &InventoryStashRule) -> HashSet<(u8, u8)> {
     slot_set(&rule.waystone_slots)
+}
+
+fn snapshot_color_map(rule: &InventoryStashRule) -> HashMap<String, String> {
+    rule.snapshot_colors
+        .iter()
+        .map(|snapshot| (snapshot.slot.clone(), snapshot.color.clone()))
+        .collect()
+}
+
+fn slot_id(column: u8, row: u8) -> String {
+    format!("{column}:{row}")
 }
 
 fn slot_set(slots: &[String]) -> HashSet<(u8, u8)> {
@@ -245,6 +284,8 @@ mod tests {
             name: "Inventory".into(),
             enabled: true,
             trigger_key: "F6".into(),
+            capture_baseline_key: "F8".into(),
+            detection_mode: "emptyColor".into(),
             columns: 12,
             rows: 5,
             grid: InventoryGrid {
@@ -259,6 +300,7 @@ mod tests {
             tolerance: 10,
             ignored_slots: vec!["0:0".into(), "11:4".into()],
             waystone_slots: vec![],
+            snapshot_colors: vec![],
             humanization: HumanizationSettings {
                 enabled: true,
                 min_ms: 50,

@@ -101,6 +101,8 @@ function previewRule(): InventoryStashRule {
     name: 'Inventory to stash',
     enabled: false,
     triggerKey: 'F6',
+    captureBaselineKey: 'F8',
+    detectionMode: 'emptyColor',
     columns: 12,
     rows: 5,
     grid: { x: 34, y: 37, width: 844, height: 352 },
@@ -110,6 +112,7 @@ function previewRule(): InventoryStashRule {
     tolerance: 18,
     ignoredSlots: [],
     waystoneSlots: [],
+    snapshotColors: [],
     humanization: { enabled: true, minMs: 120, maxMs: 240 },
   }
 }

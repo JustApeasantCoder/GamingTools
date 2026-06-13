@@ -29,6 +29,12 @@ import { SettingsPanel } from './features/settings/SettingsPanel'
 import { ProfileSettings } from './features/profiles/ProfileSettings'
 
 type FeatureTab = 'macros' | 'pixels' | 'toggleHold' | 'inventoryStash' | 'profile' | 'settings'
+type RuntimeEventPayload = {
+  kind: string
+  message: string
+  ruleId?: string
+  snapshotColors?: AppProfile['inventoryStashRules'][number]['snapshotColors']
+}
 
 const defaultStore: ProfileStore = {
   activeProfileId: 'default',
@@ -106,6 +112,8 @@ const defaultStore: ProfileStore = {
           name: 'Inventory to stash',
           enabled: false,
           triggerKey: 'F6',
+          captureBaselineKey: 'F8',
+          detectionMode: 'emptyColor',
           columns: 12,
           rows: 5,
           grid: { x: 34, y: 37, width: 844, height: 352 },
@@ -115,6 +123,7 @@ const defaultStore: ProfileStore = {
           tolerance: 18,
           ignoredSlots: [],
           waystoneSlots: [],
+          snapshotColors: [],
           humanization: { enabled: true, minMs: 120, maxMs: 240 },
         },
       ],
@@ -196,10 +205,44 @@ function App() {
     let cancelled = false
     let unlisten: (() => void) | undefined
     import('@tauri-apps/api/event')
-      .then(({ listen }) => listen<{ kind: string; message: string }>('runtime-event', (event) => {
+      .then(({ listen }) => listen<RuntimeEventPayload>('runtime-event', (event) => {
         addLog(event.payload.message)
         if (event.payload.message.startsWith('Automation started')) setIsRunning(true)
         if (event.payload.message.startsWith('Automation stopped')) setIsRunning(false)
+        if (event.payload.kind === 'inventorySnapshot' && event.payload.ruleId && event.payload.snapshotColors) {
+          let updatedProfile: AppProfile | undefined
+          setStore((current) => {
+            const profiles = current.profiles.map((profile) => {
+              const hasRule = profile.inventoryStashRules.some((rule) => rule.id === event.payload.ruleId)
+              if (!hasRule) return profile
+              updatedProfile = {
+                ...profile,
+                inventoryStashRules: profile.inventoryStashRules.map((rule) => rule.id === event.payload.ruleId
+                  ? { ...rule, detectionMode: 'snapshot', snapshotColors: event.payload.snapshotColors ?? [] }
+                  : rule),
+              }
+              return updatedProfile
+            })
+            return { ...current, profiles }
+          })
+          if (updatedProfile) {
+            const revision = ++saveRevision.current
+            setSaveStatus('saving')
+            const operation = saveQueue.current.then(async () => {
+              try {
+                await callBackend('save_profile', { profile: updatedProfile })
+                setPersistenceError(undefined)
+                if (saveRevision.current === revision) setSaveStatus('saved')
+              } catch (error) {
+                const message = errorMessage(error)
+                setPersistenceError(message)
+                if (saveRevision.current === revision) setSaveStatus('error')
+                addLog(`Could not save ${updatedProfile?.name ?? 'profile'}: ${message}`)
+              }
+            })
+            saveQueue.current = operation
+          }
+        }
       }))
       .then((dispose) => {
         if (cancelled) {
@@ -366,6 +409,12 @@ function App() {
     const count = await callBackend<number>('test_inventory_stash_rule', { rule })
     addLog(`${rule.name} test: ${count} occupied slot${count === 1 ? '' : 's'} detected`)
     return count
+  }
+
+  const handleCaptureInventoryStashSnapshot = async (rule: AppProfile['inventoryStashRules'][number]) => {
+    const snapshots = await callBackend<AppProfile['inventoryStashRules'][number]['snapshotColors']>('capture_inventory_stash_snapshot', { rule })
+    addLog(`${rule.name} snapshot: ${snapshots.length} slot color${snapshots.length === 1 ? '' : 's'} captured`)
+    return snapshots
   }
 
   const handleAddProfile = async () => {
@@ -542,6 +591,7 @@ function App() {
                 onPickPixel={handlePickPixel}
                 onSamplePixel={handleSamplePixel}
                 onTestRule={handleTestInventoryStashRule}
+                onCaptureSnapshot={handleCaptureInventoryStashSnapshot}
               />
             ) : activeTab === 'profile' ? (
               <ProfileSettings

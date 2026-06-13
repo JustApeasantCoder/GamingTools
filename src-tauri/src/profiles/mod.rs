@@ -122,11 +122,22 @@ pub struct InventoryGrid {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct InventorySlotSnapshot {
+    pub slot: String,
+    pub color: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct InventoryStashRule {
     pub id: String,
     pub name: String,
     pub enabled: bool,
     pub trigger_key: String,
+    #[serde(default = "default_inventory_capture_baseline_key")]
+    pub capture_baseline_key: String,
+    #[serde(default = "default_inventory_detection_mode")]
+    pub detection_mode: String,
     #[serde(default = "default_inventory_columns")]
     pub columns: u8,
     #[serde(default = "default_inventory_rows")]
@@ -145,6 +156,8 @@ pub struct InventoryStashRule {
     pub ignored_slots: Vec<String>,
     #[serde(default)]
     pub waystone_slots: Vec<String>,
+    #[serde(default)]
+    pub snapshot_colors: Vec<InventorySlotSnapshot>,
     #[serde(default = "default_inventory_humanization")]
     pub humanization: HumanizationSettings,
 }
@@ -465,6 +478,14 @@ fn default_inventory_columns() -> u8 {
     12
 }
 
+fn default_inventory_detection_mode() -> String {
+    "emptyColor".into()
+}
+
+fn default_inventory_capture_baseline_key() -> String {
+    "F8".into()
+}
+
 fn default_inventory_rows() -> u8 {
     5
 }
@@ -612,6 +633,8 @@ fn default_inventory_stash_rule() -> InventoryStashRule {
         name: "Inventory to stash".into(),
         enabled: false,
         trigger_key: "F6".into(),
+        capture_baseline_key: default_inventory_capture_baseline_key(),
+        detection_mode: default_inventory_detection_mode(),
         columns: default_inventory_columns(),
         rows: default_inventory_rows(),
         grid: default_inventory_grid(),
@@ -621,6 +644,7 @@ fn default_inventory_stash_rule() -> InventoryStashRule {
         tolerance: default_inventory_tolerance(),
         ignored_slots: Vec::new(),
         waystone_slots: Vec::new(),
+        snapshot_colors: Vec::new(),
         humanization: default_inventory_humanization(),
     }
 }
