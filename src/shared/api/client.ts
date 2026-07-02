@@ -10,7 +10,7 @@ export async function callBackend<T>(command: string, args?: Record<string, unkn
   return invoke<T>(command, args)
 }
 
-function previewResponse<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+async function previewResponse<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   if (command === 'sample_pixel') {
     const request = args?.request as { x: number; y: number } | undefined
     return Promise.resolve({ color: '#34d399', x: request?.x ?? 0, y: request?.y ?? 0 } as T)
@@ -74,8 +74,45 @@ function previewResponse<T>(command: string, args?: Record<string, unknown>): Pr
           reasons: ['S-tier Ritual Favours in Map have 65% increased chance to be Omens', 'Mechanic-specific suffix matches tablet type', '10 uses remaining'],
           rawText: 'Ritual Precursor Tablet',
         },
+        {
+          slot: '7:6',
+          column: 7,
+          row: 6,
+          tabletType: 'Breach Precursor Tablet',
+          rarity: 'Rare',
+          usesRemaining: 10,
+          valueTier: 'A',
+          valueScore: 88,
+          prefixes: [
+            { text: 'Map has 35% increased number of Rare Monsters', affixType: 'prefix', tier: 'A', score: 50 },
+            { text: 'Map has 7% increased pack size', affixType: 'prefix', tier: 'B', score: 28 },
+          ],
+          suffixes: [{ text: 'Breach Splinters found in Map have 50% increased quantity', affixType: 'suffix', tier: 'B', score: 28 }],
+          unknownMods: [],
+          reasons: ['A-tier Map has 35% increased number of Rare Monsters', 'Rare tablet has room for one Exalted modifier'],
+          rawText: 'Breach Precursor Tablet',
+        },
       ],
     } as T)
+  }
+
+  if (command === 'scan_and_craft_tablets') {
+    const scan = await previewResponse<Record<string, unknown>>('scan_tablet_stash', args)
+    return Promise.resolve({
+      initialScan: scan,
+      finalScan: scan,
+      actions: [
+        { slot: '2:3', currency: 'regal', reason: 'magic tablet with an A-tier modifier' },
+        { slot: '2:3', currency: 'exalted', reason: 'regaled tablet with a protected A-tier modifier' },
+        { slot: '5:4', currency: 'regal', reason: 'magic tablet with an A-tier modifier' },
+        { slot: '5:4', currency: 'exalted', reason: 'regaled tablet with a protected A-tier modifier' },
+        { slot: '7:6', currency: 'exalted', reason: 'rare tablet with three modifiers' },
+      ],
+    } as T)
+  }
+
+  if (command === 'capture_tablet_craft_location') {
+    return Promise.resolve({ x: 320, y: 240 } as T)
   }
 
   if (command === 'highlight_tablet_slot' || command === 'move_tablet_to_inventory') {

@@ -14,7 +14,7 @@ import {
 } from 'lucide-react'
 import './App.css'
 import { callBackend } from './shared/api/client'
-import type { AppProfile, MacroStep, PixelSampleRequest, ProfileStore, TabletScanReport } from './shared/types/profile'
+import type { AppProfile, MacroStep, PixelSampleRequest, ProfileStore, TabletCraftReport, TabletScanReport } from './shared/types/profile'
 import { MacroBuilder } from './features/macros/MacroBuilder'
 import { MacroInspector } from './features/macros/MacroInspector'
 import { getProfileTimingIssues } from './features/macros/macroTiming'
@@ -139,6 +139,16 @@ const defaultStore: ProfileStore = {
           rows: 12,
           grid: { x: 18, y: 126, width: 632, height: 632 },
           scanDelayMs: 90,
+          craft: {
+            transmutation: { x: 0, y: 0 },
+            augmentation: { x: 0, y: 0 },
+            regal: { x: 0, y: 0 },
+            exalted: { x: 0, y: 0 },
+            alchemy: { x: 0, y: 0 },
+            tabSwitchDelayMs: 120,
+            craftDelayMs: 90,
+          },
+          valueRules: [],
         },
       ],
     },
@@ -438,6 +448,12 @@ function App() {
     return report
   }
 
+  const handleScanAndCraftTablets = async (rule: AppProfile['tabletScannerRules'][number]) => {
+    const report = await callBackend<TabletCraftReport>('scan_and_craft_tablets', { rule })
+    addLog(`${rule.name} craft: ${report.actions.length} currency action${report.actions.length === 1 ? '' : 's'} completed`)
+    return report
+  }
+
   const handleHighlightTabletSlot = async (rule: AppProfile['tabletScannerRules'][number], slot: string) => {
     await callBackend('highlight_tablet_slot', { rule, slot })
     addLog(`${rule.name}: highlighted slot ${slot}`)
@@ -637,6 +653,7 @@ function App() {
                 profile={activeProfile}
                 onProfileChange={updateActiveProfile}
                 onScan={handleScanTabletStash}
+                onScanAndCraft={handleScanAndCraftTablets}
                 onHighlightSlot={handleHighlightTabletSlot}
                 onMoveToInventory={handleMoveTabletToInventory}
                 onGetForegroundApp={handleGetForegroundApp}

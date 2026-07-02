@@ -117,6 +117,16 @@ function previewRule(view: OverlayView): OverlayRule {
       triggerKey: 'F9',
       targetExecutable: '',
       scanDelayMs: 90,
+      craft: {
+        transmutation: { x: 0, y: 0 },
+        augmentation: { x: 0, y: 0 },
+        regal: { x: 0, y: 0 },
+        exalted: { x: 0, y: 0 },
+        alchemy: { x: 0, y: 0 },
+        tabSwitchDelayMs: 120,
+        craftDelayMs: 90,
+      },
+      valueRules: [],
     }
   }
   return {

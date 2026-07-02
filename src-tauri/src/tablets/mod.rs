@@ -1,7 +1,14 @@
 use serde::Serialize;
 use std::{thread, time::Duration};
 
-use crate::{foreground, input, profiles::TabletScannerRule};
+use crate::{
+    foreground, input,
+    profiles::{PixelPoint, ScreenPoint, TabletScannerRule, TabletValueRuleConfig},
+    screen,
+};
+
+const EMPTY_TABLET_SLOT_COLOR: &str = "#000000";
+const EMPTY_TABLET_SLOT_TOLERANCE: u8 = 8;
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -39,6 +46,22 @@ pub struct TabletValueMod {
     pub score: u16,
 }
 
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TabletCraftReport {
+    pub initial_scan: TabletScanReport,
+    pub final_scan: TabletScanReport,
+    pub actions: Vec<TabletCraftAction>,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TabletCraftAction {
+    pub slot: String,
+    pub currency: String,
+    pub reason: String,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ScannerSlot {
     column: u8,
@@ -71,6 +94,10 @@ pub fn scan_stash(rule: &TabletScannerRule) -> Result<TabletScanReport, String> 
     thread::sleep(delay);
 
     for slot in &slots {
+        if slot_looks_empty(slot) {
+            skipped_slots.push(slot_id(slot.column, slot.row));
+            continue;
+        }
         input::move_cursor_to(slot.x, slot.y)?;
         thread::sleep(delay);
         clipboard::clear_clipboard()?;
@@ -81,7 +108,7 @@ pub fn scan_stash(rule: &TabletScannerRule) -> Result<TabletScanReport, String> 
             skipped_slots.push(slot_id(slot.column, slot.row));
             continue;
         }
-        match parse_tablet_text(&text, slot.column, slot.row) {
+        match parse_tablet_text_with_rules(&text, slot.column, slot.row, &rule.value_rules) {
             Some(tablet) => tablets.push(tablet),
             None => skipped_slots.push(slot_id(slot.column, slot.row)),
         }
@@ -97,6 +124,84 @@ pub fn scan_stash(rule: &TabletScannerRule) -> Result<TabletScanReport, String> 
         scanned_slots: slots.len(),
         tablets,
         skipped_slots,
+    })
+}
+
+pub fn capture_cursor_location(wait_ms: u64) -> Result<ScreenPoint, String> {
+    thread::sleep(Duration::from_millis(wait_ms.clamp(250, 10_000)));
+    let (x, y) = input::cursor_position()?;
+    Ok(ScreenPoint { x, y })
+}
+
+pub fn scan_and_craft(rule: &TabletScannerRule) -> Result<TabletCraftReport, String> {
+    validate_craft_settings(rule)?;
+    let _cursor_restore = CursorRestore::capture();
+    let initial_scan = scan_stash(rule)?;
+    let mut actions = Vec::new();
+
+    let normal_slots = transmutation_slots(&initial_scan);
+    craft_currency_for_slots(
+        rule,
+        &normal_slots,
+        CurrencyKind::Transmutation,
+        "normal tablet",
+        &mut actions,
+    )?;
+
+    let augment_slots = augmentation_slots(&initial_scan);
+    craft_currency_for_slots(
+        rule,
+        &augment_slots,
+        CurrencyKind::Augmentation,
+        "normal or one-modifier magic tablet",
+        &mut actions,
+    )?;
+
+    let after_magic_scan = if normal_slots.is_empty() && augment_slots.is_empty() {
+        initial_scan.clone()
+    } else {
+        scan_stash(rule)?
+    };
+
+    let alchemy_slots = alchemy_slots(&after_magic_scan);
+    craft_currency_for_slots(
+        rule,
+        &alchemy_slots,
+        CurrencyKind::Alchemy,
+        "magic tablet without an A-tier modifier",
+        &mut actions,
+    )?;
+
+    let rare_exalted_slots = rare_exalted_slots(&after_magic_scan);
+    craft_currency_for_slots(
+        rule,
+        &rare_exalted_slots,
+        CurrencyKind::Exalted,
+        "rare tablet with three modifiers",
+        &mut actions,
+    )?;
+
+    let regal_slots = regal_slots(&after_magic_scan);
+    craft_currency_for_slots(
+        rule,
+        &regal_slots,
+        CurrencyKind::Regal,
+        "magic tablet with an A-tier modifier",
+        &mut actions,
+    )?;
+    craft_currency_for_slots(
+        rule,
+        &regal_slots,
+        CurrencyKind::Exalted,
+        "regaled tablet with a protected A-tier modifier",
+        &mut actions,
+    )?;
+
+    let final_scan = scan_stash(rule)?;
+    Ok(TabletCraftReport {
+        initial_scan,
+        final_scan,
+        actions,
     })
 }
 
@@ -159,7 +264,17 @@ impl Drop for CursorRestore {
     }
 }
 
+#[cfg(test)]
 pub fn parse_tablet_text(text: &str, column: u8, row: u8) -> Option<TabletScanItem> {
+    parse_tablet_text_with_rules(text, column, row, &[])
+}
+
+fn parse_tablet_text_with_rules(
+    text: &str,
+    column: u8,
+    row: u8,
+    custom_rules: &[TabletValueRuleConfig],
+) -> Option<TabletScanItem> {
     let lines = text
         .lines()
         .map(str::trim)
@@ -186,8 +301,8 @@ pub fn parse_tablet_text(text: &str, column: u8, row: u8) -> Option<TabletScanIt
     let mut prefixes = Vec::new();
     let mut suffixes = Vec::new();
     let mut unknown_mods = Vec::new();
-    for line in likely_modifier_lines(&lines) {
-        if let Some(classified) = classify_modifier(line, &tablet_type) {
+    for line in likely_modifier_lines(&lines, &tablet_type, custom_rules) {
+        if let Some(classified) = classify_modifier(line, &tablet_type, custom_rules) {
             match classified.affix_type.as_str() {
                 "prefix" => prefixes.push(classified),
                 "suffix" => suffixes.push(classified),
@@ -217,6 +332,26 @@ pub fn parse_tablet_text(text: &str, column: u8, row: u8) -> Option<TabletScanIt
         reasons,
         raw_text: text.to_string(),
     })
+}
+
+fn slot_looks_empty(slot: &ScannerSlot) -> bool {
+    match screen::sample_pixel(PixelPoint {
+        x: slot.x,
+        y: slot.y,
+    }) {
+        Ok(sample) => is_empty_slot_color(&sample.color),
+        Err(error) => {
+            log::warn!(
+                "Tablet scanner could not sample slot {}: {error}",
+                slot_id(slot.column, slot.row)
+            );
+            false
+        }
+    }
+}
+
+fn is_empty_slot_color(color: &str) -> bool {
+    screen::color_matches(color, EMPTY_TABLET_SLOT_COLOR, EMPTY_TABLET_SLOT_TOLERANCE)
 }
 
 fn scanner_slots(rule: &TabletScannerRule) -> Result<Vec<ScannerSlot>, String> {
@@ -273,21 +408,50 @@ fn value_after_prefix(lines: &[String], prefix: &str) -> Option<String> {
     })
 }
 
-fn likely_modifier_lines(lines: &[String]) -> impl Iterator<Item = &str> {
-    lines.iter().filter_map(|line| {
+fn likely_modifier_lines<'a>(
+    lines: &'a [String],
+    tablet_type: &'a str,
+    custom_rules: &'a [TabletValueRuleConfig],
+) -> impl Iterator<Item = &'a str> {
+    let modifier_start = lines
+        .iter()
+        .position(|line| line.to_ascii_lowercase().contains("uses remaining"))
+        .map(|index| index + 1);
+
+    lines.iter().enumerate().filter_map(move |(index, line)| {
         let lowered = line.to_ascii_lowercase();
-        if lowered.starts_with("item class:")
-            || lowered.starts_with("rarity:")
-            || lowered.contains("uses remaining")
-            || lowered.contains("place into")
-            || lowered.contains("requires")
-            || lowered.contains("unidentified")
-            || !modifier_words(&lowered)
-        {
+        if ignored_item_text_line(line, tablet_type) {
             None
-        } else {
+        } else if modifier_start.is_some_and(|start| index >= start)
+            || modifier_words(&lowered)
+            || custom_modifier_match(&lowered, custom_rules)
+        {
             Some(line.as_str())
+        } else {
+            None
         }
+    })
+}
+
+fn ignored_item_text_line(line: &str, tablet_type: &str) -> bool {
+    let lowered = line.to_ascii_lowercase();
+    lowered.starts_with("item class:")
+        || lowered.starts_with("rarity:")
+        || lowered.contains("uses remaining")
+        || lowered.contains("place into")
+        || lowered.contains("can be used")
+        || lowered.contains("requires")
+        || lowered.contains("right click")
+        || lowered.contains("shift click")
+        || lowered.contains("unidentified")
+        || lowered == "corrupted"
+        || line == tablet_type
+}
+
+fn custom_modifier_match(line: &str, custom_rules: &[TabletValueRuleConfig]) -> bool {
+    custom_rules.iter().any(|rule| {
+        let text_match = rule.text_match.trim().to_ascii_lowercase();
+        !text_match.is_empty() && line.contains(&text_match)
     })
 }
 
@@ -314,10 +478,39 @@ fn modifier_words(line: &str) -> bool {
     .any(|word| line.contains(word))
 }
 
-fn classify_modifier(text: &str, tablet_type: &str) -> Option<TabletValueMod> {
+fn classify_modifier(
+    text: &str,
+    tablet_type: &str,
+    custom_rules: &[TabletValueRuleConfig],
+) -> Option<TabletValueMod> {
     let normalized = text.to_ascii_lowercase();
     let tablet = tablet_type.to_ascii_lowercase();
     let mut best: Option<(AffixType, ValueTier, u16)> = None;
+
+    for rule in custom_rules {
+        let text_match = rule.text_match.trim().to_ascii_lowercase();
+        if text_match.is_empty() || !normalized.contains(&text_match) {
+            continue;
+        }
+        let tablet_match = rule.tablet_match.trim().to_ascii_lowercase();
+        if !tablet_match.is_empty() && !tablet.contains(&tablet_match) {
+            continue;
+        }
+        let Some(affix_type) = parse_affix_type(&rule.affix_type) else {
+            continue;
+        };
+        let Some(tier) = parse_value_tier(&rule.tier) else {
+            continue;
+        };
+        let score = rule.score + high_roll_bonus(text, rule.high_roll_at);
+        if best
+            .as_ref()
+            .map(|(_, _, current_score)| score > *current_score)
+            .unwrap_or(true)
+        {
+            best = Some((affix_type, tier, score));
+        }
+    }
 
     for rule in value_rules() {
         if !rule.applies_to_tablet(&tablet) || !rule.matches(&normalized) {
@@ -470,6 +663,247 @@ fn parse_slot_id(slot: &str) -> Result<(u8, u8), String> {
         row.parse()
             .map_err(|_| format!("Invalid slot row: {slot}"))?,
     ))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CurrencyKind {
+    Transmutation,
+    Augmentation,
+    Regal,
+    Exalted,
+    Alchemy,
+}
+
+impl CurrencyKind {
+    fn label(self) -> &'static str {
+        match self {
+            CurrencyKind::Transmutation => "transmutation",
+            CurrencyKind::Augmentation => "augmentation",
+            CurrencyKind::Regal => "regal",
+            CurrencyKind::Exalted => "exalted",
+            CurrencyKind::Alchemy => "alchemy",
+        }
+    }
+}
+
+fn validate_craft_settings(rule: &TabletScannerRule) -> Result<(), String> {
+    for (label, point) in [
+        ("Transmutation", rule.craft.transmutation),
+        ("Augmentation", rule.craft.augmentation),
+        ("Regal", rule.craft.regal),
+        ("Exalted", rule.craft.exalted),
+        ("Alchemy", rule.craft.alchemy),
+    ] {
+        if point.x <= 0 && point.y <= 0 {
+            return Err(format!("{label} orb location has not been picked"));
+        }
+    }
+    if rule.craft.craft_delay_ms > 5_000 {
+        return Err("Craft wait is too high".into());
+    }
+    Ok(())
+}
+
+fn currency_point(rule: &TabletScannerRule, currency: CurrencyKind) -> ScreenPoint {
+    match currency {
+        CurrencyKind::Transmutation => rule.craft.transmutation,
+        CurrencyKind::Augmentation => rule.craft.augmentation,
+        CurrencyKind::Regal => rule.craft.regal,
+        CurrencyKind::Exalted => rule.craft.exalted,
+        CurrencyKind::Alchemy => rule.craft.alchemy,
+    }
+}
+
+fn craft_currency_for_slots(
+    rule: &TabletScannerRule,
+    slot_ids: &[String],
+    currency: CurrencyKind,
+    reason: &str,
+    actions: &mut Vec<TabletCraftAction>,
+) -> Result<(), String> {
+    if slot_ids.is_empty() {
+        return Ok(());
+    }
+
+    let slots = scanner_slots(rule)?;
+    let targets = slot_ids
+        .iter()
+        .map(|slot_id| {
+            let (column, row) = parse_slot_id(slot_id)?;
+            slots
+                .iter()
+                .find(|slot| slot.column == column && slot.row == row)
+                .copied()
+                .ok_or_else(|| format!("Slot is outside the tablet scanner grid: {slot_id}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    foreground::focus_executable(&rule.target_executable)?;
+    thread::sleep(Duration::from_millis(rule.scan_delay_ms.clamp(20, 1_000)));
+    switch_to_currency_tab(rule)?;
+    let orb = currency_point(rule, currency);
+    right_click_orb(rule, orb)?;
+    switch_to_tablet_tab(rule)?;
+
+    shift_left_click_slots(rule, &targets, currency, reason, actions)?;
+
+    Ok(())
+}
+
+fn shift_left_click_slots(
+    rule: &TabletScannerRule,
+    targets: &[ScannerSlot],
+    currency: CurrencyKind,
+    reason: &str,
+    actions: &mut Vec<TabletCraftAction>,
+) -> Result<(), String> {
+    if targets.is_empty() {
+        return Ok(());
+    }
+
+    input::key_down("SHIFT")?;
+    let mut result = Ok(());
+
+    for slot in targets {
+        if let Err(error) = input::left_click_at(slot.x, slot.y, craft_click_timing(rule)) {
+            result = Err(error);
+            break;
+        }
+        actions.push(TabletCraftAction {
+            slot: slot_id(slot.column, slot.row),
+            currency: currency.label().into(),
+            reason: reason.into(),
+        });
+    }
+
+    match (result, input::key_up("SHIFT")) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Ok(()), Err(release_error)) => Err(format!(
+            "Unable to release Shift after crafting: {release_error}"
+        )),
+        (Err(click_error), Ok(())) => Err(click_error),
+        (Err(click_error), Err(release_error)) => Err(format!(
+            "{click_error}; also unable to release Shift after crafting: {release_error}"
+        )),
+    }
+}
+
+fn switch_to_currency_tab(rule: &TabletScannerRule) -> Result<(), String> {
+    ctrl_wheel(120, rule.craft.tab_switch_delay_ms)
+}
+
+fn switch_to_tablet_tab(rule: &TabletScannerRule) -> Result<(), String> {
+    ctrl_wheel(-120, rule.craft.tab_switch_delay_ms)
+}
+
+fn ctrl_wheel(delta: i32, delay_ms: u64) -> Result<(), String> {
+    let delay = Duration::from_millis(delay_ms.clamp(20, 1_000));
+    input::key_down("CTRL")?;
+    let result = input::mouse_wheel(delta).and_then(|_| input::key_up("CTRL"));
+    if result.is_err() {
+        let _ = input::key_up("CTRL");
+    }
+    thread::sleep(delay);
+    result
+}
+
+fn right_click_orb(rule: &TabletScannerRule, point: ScreenPoint) -> Result<(), String> {
+    let timing = craft_click_timing(rule);
+    input::right_click_at(point.x, point.y, timing)?;
+    thread::sleep(craft_delay(rule));
+    Ok(())
+}
+
+fn craft_click_timing(rule: &TabletScannerRule) -> input::ClickTiming {
+    let delay_ms = rule.craft.craft_delay_ms.clamp(20, 2_000);
+    input::ClickTiming {
+        cursor_settle_ms: delay_ms,
+        click_hold_ms: 40,
+        click_release_settle_ms: delay_ms,
+    }
+}
+
+fn craft_delay(rule: &TabletScannerRule) -> Duration {
+    Duration::from_millis(rule.craft.craft_delay_ms.clamp(20, 2_000))
+}
+
+fn transmutation_slots(report: &TabletScanReport) -> Vec<String> {
+    report
+        .tablets
+        .iter()
+        .filter(|tablet| tablet.rarity.eq_ignore_ascii_case("normal"))
+        .map(|tablet| tablet.slot.clone())
+        .collect()
+}
+
+fn augmentation_slots(report: &TabletScanReport) -> Vec<String> {
+    report
+        .tablets
+        .iter()
+        .filter(|tablet| {
+            tablet.rarity.eq_ignore_ascii_case("normal")
+                || (tablet.rarity.eq_ignore_ascii_case("magic") && modifier_count(tablet) <= 1)
+        })
+        .map(|tablet| tablet.slot.clone())
+        .collect()
+}
+
+fn alchemy_slots(report: &TabletScanReport) -> Vec<String> {
+    report
+        .tablets
+        .iter()
+        .filter(|tablet| {
+            tablet.rarity.eq_ignore_ascii_case("magic") && !has_at_least_a_tier(tablet)
+        })
+        .map(|tablet| tablet.slot.clone())
+        .collect()
+}
+
+fn regal_slots(report: &TabletScanReport) -> Vec<String> {
+    report
+        .tablets
+        .iter()
+        .filter(|tablet| tablet.rarity.eq_ignore_ascii_case("magic") && has_at_least_a_tier(tablet))
+        .map(|tablet| tablet.slot.clone())
+        .collect()
+}
+
+fn rare_exalted_slots(report: &TabletScanReport) -> Vec<String> {
+    report
+        .tablets
+        .iter()
+        .filter(|tablet| tablet.rarity.eq_ignore_ascii_case("rare") && modifier_count(tablet) == 3)
+        .map(|tablet| tablet.slot.clone())
+        .collect()
+}
+
+fn modifier_count(tablet: &TabletScanItem) -> usize {
+    tablet.prefixes.len() + tablet.suffixes.len() + tablet.unknown_mods.len()
+}
+
+fn has_at_least_a_tier(tablet: &TabletScanItem) -> bool {
+    tablet
+        .prefixes
+        .iter()
+        .chain(&tablet.suffixes)
+        .any(|modifier| matches!(modifier.tier.as_str(), "S" | "A"))
+}
+
+fn parse_affix_type(value: &str) -> Option<AffixType> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "prefix" => Some(AffixType::Prefix),
+        "suffix" => Some(AffixType::Suffix),
+        _ => None,
+    }
+}
+
+fn parse_value_tier(value: &str) -> Option<ValueTier> {
+    match value.trim().to_ascii_uppercase().as_str() {
+        "S" => Some(ValueTier::S),
+        "A" => Some(ValueTier::A),
+        "B" => Some(ValueTier::B),
+        _ => None,
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -775,7 +1209,7 @@ fn value_rules() -> &'static [ValueRule] {
 
 #[cfg(windows)]
 mod clipboard {
-    use std::slice;
+    use std::{slice, thread, time::Duration};
     use windows_sys::Win32::System::{
         DataExchange::{
             CloseClipboard, EmptyClipboard, GetClipboardData, IsClipboardFormatAvailable,
@@ -785,6 +1219,8 @@ mod clipboard {
     };
 
     const CF_UNICODETEXT: u32 = 13;
+    const OPEN_CLIPBOARD_ATTEMPTS: usize = 12;
+    const OPEN_CLIPBOARD_RETRY_MS: u64 = 12;
 
     pub fn clear_clipboard() -> Result<(), String> {
         let _guard = ClipboardGuard::open()?;
@@ -828,15 +1264,23 @@ mod clipboard {
 
     impl ClipboardGuard {
         fn open() -> Result<Self, String> {
-            let opened = unsafe { OpenClipboard(std::ptr::null_mut()) };
-            if opened == 0 {
-                Err(format!(
-                    "Unable to open clipboard: {}",
-                    std::io::Error::last_os_error()
-                ))
-            } else {
-                Ok(Self)
+            let mut last_error = None;
+            for attempt in 0..OPEN_CLIPBOARD_ATTEMPTS {
+                let opened = unsafe { OpenClipboard(std::ptr::null_mut()) };
+                if opened != 0 {
+                    return Ok(Self);
+                }
+                last_error = Some(std::io::Error::last_os_error());
+                if attempt + 1 < OPEN_CLIPBOARD_ATTEMPTS {
+                    thread::sleep(Duration::from_millis(OPEN_CLIPBOARD_RETRY_MS));
+                }
             }
+            Err(format!(
+                "Unable to open clipboard after {OPEN_CLIPBOARD_ATTEMPTS} attempts: {}",
+                last_error
+                    .map(|error| error.to_string())
+                    .unwrap_or_else(|| "unknown clipboard error".into())
+            ))
         }
     }
 
@@ -925,7 +1369,209 @@ Map has 1 additional random Modifier
     }
 
     #[test]
+    fn custom_value_rule_can_classify_user_tier_text() {
+        let text = r#"Item Class: Tablets
+Rarity: Magic
+Breach Precursor Tablet
+--------
+10 Uses Remaining
+--------
+Strongboxes contain extra Artifacts
+"#;
+        let rules = vec![TabletValueRuleConfig {
+            id: "custom-artifacts".into(),
+            label: "Artifacts".into(),
+            tablet_match: "breach".into(),
+            text_match: "extra artifacts".into(),
+            affix_type: "suffix".into(),
+            tier: "A".into(),
+            score: 45,
+            high_roll_at: None,
+        }];
+
+        let item = parse_tablet_text_with_rules(text, 1, 1, &rules).unwrap();
+
+        assert!(item.suffixes.iter().any(|modifier| {
+            modifier.tier == "A" && modifier.text == "Strongboxes contain extra Artifacts"
+        }));
+        assert!(has_at_least_a_tier(&item));
+    }
+
+    #[test]
+    fn craft_plan_starts_normals_with_transmutation_and_augmentation() {
+        let report = TabletScanReport {
+            scanned_slots: 2,
+            tablets: vec![
+                test_tablet("0:0", "Normal", vec![], vec![], vec![]),
+                test_tablet(
+                    "1:0",
+                    "Magic",
+                    vec![test_mod("A", "prefix")],
+                    vec![],
+                    vec![],
+                ),
+            ],
+            skipped_slots: vec![],
+        };
+
+        assert_eq!(transmutation_slots(&report), vec!["0:0"]);
+        assert_eq!(augmentation_slots(&report), vec!["0:0", "1:0"]);
+    }
+
+    #[test]
+    fn craft_plan_sends_bad_magic_to_alchemy_after_augmentation_rescan() {
+        let report = TabletScanReport {
+            scanned_slots: 2,
+            tablets: vec![
+                test_tablet("0:0", "Magic", vec![], vec![], vec!["bad mod"]),
+                test_tablet(
+                    "1:0",
+                    "Magic",
+                    vec![test_mod("B", "prefix")],
+                    vec![test_mod("B", "suffix")],
+                    vec![],
+                ),
+            ],
+            skipped_slots: vec![],
+        };
+
+        assert_eq!(alchemy_slots(&report), vec!["0:0", "1:0"]);
+        assert!(regal_slots(&report).is_empty());
+    }
+
+    #[test]
+    fn craft_plan_sends_a_tier_magic_to_regal_and_exalted() {
+        let report = TabletScanReport {
+            scanned_slots: 2,
+            tablets: vec![
+                test_tablet(
+                    "0:0",
+                    "Magic",
+                    vec![test_mod("A", "prefix")],
+                    vec![],
+                    vec![],
+                ),
+                test_tablet(
+                    "1:0",
+                    "Magic",
+                    vec![],
+                    vec![test_mod("S", "suffix")],
+                    vec![],
+                ),
+            ],
+            skipped_slots: vec![],
+        };
+
+        assert!(alchemy_slots(&report).is_empty());
+        assert_eq!(regal_slots(&report), vec!["0:0", "1:0"]);
+    }
+
+    #[test]
+    fn craft_plan_exalts_rare_tablets_with_three_modifiers() {
+        let report = TabletScanReport {
+            scanned_slots: 3,
+            tablets: vec![
+                test_tablet(
+                    "0:0",
+                    "Rare",
+                    vec![test_mod("A", "prefix"), test_mod("B", "prefix")],
+                    vec![test_mod("B", "suffix")],
+                    vec![],
+                ),
+                test_tablet(
+                    "1:0",
+                    "Rare",
+                    vec![test_mod("A", "prefix"), test_mod("B", "prefix")],
+                    vec![test_mod("B", "suffix"), test_mod("B", "suffix")],
+                    vec![],
+                ),
+                test_tablet(
+                    "2:0",
+                    "Magic",
+                    vec![test_mod("A", "prefix")],
+                    vec![test_mod("B", "suffix")],
+                    vec![],
+                ),
+            ],
+            skipped_slots: vec![],
+        };
+
+        assert_eq!(rare_exalted_slots(&report), vec!["0:0"]);
+    }
+
+    #[test]
+    fn rare_tablet_counts_post_uses_modifier_lines_without_known_keywords() {
+        let text = r#"Item Class: Tablets
+Rarity: Rare
+Warding Etched Vessel
+Precursor Tablet
+--------
+10 Uses Remaining
+--------
+Areas contain 2 additional Strongboxes
+Strongboxes are Corrupted
+Areas have 15% increased chance to contain Essences
+Can be used in a personal Map Device
+"#;
+
+        let item = parse_tablet_text(text, 4, 5).unwrap();
+
+        assert_eq!(item.rarity, "Rare");
+        assert_eq!(modifier_count(&item), 3);
+        assert_eq!(
+            rare_exalted_slots(&TabletScanReport {
+                scanned_slots: 1,
+                tablets: vec![item],
+                skipped_slots: vec![],
+            }),
+            vec!["4:5"]
+        );
+    }
+
+    #[test]
+    fn black_slot_center_counts_as_empty() {
+        assert!(is_empty_slot_color("#000000"));
+        assert!(is_empty_slot_color("#070606"));
+        assert!(!is_empty_slot_color("#151923"));
+    }
+
+    #[test]
     fn ignores_non_tablet_clipboard_text() {
         assert!(parse_tablet_text("Rarity: Normal\nIron Greaves", 0, 0).is_none());
+    }
+
+    fn test_tablet(
+        slot: &str,
+        rarity: &str,
+        prefixes: Vec<TabletValueMod>,
+        suffixes: Vec<TabletValueMod>,
+        unknown_mods: Vec<&str>,
+    ) -> TabletScanItem {
+        let (column, row) = parse_slot_id(slot).unwrap();
+        TabletScanItem {
+            slot: slot.into(),
+            column,
+            row,
+            name: None,
+            tablet_type: "Precursor Tablet".into(),
+            rarity: rarity.into(),
+            uses_remaining: Some(10),
+            value_tier: "Low".into(),
+            value_score: 0,
+            prefixes,
+            suffixes,
+            unknown_mods: unknown_mods.into_iter().map(String::from).collect(),
+            reasons: vec![],
+            raw_text: String::new(),
+        }
+    }
+
+    fn test_mod(tier: &str, affix_type: &str) -> TabletValueMod {
+        TabletValueMod {
+            text: format!("{tier} test roll"),
+            affix_type: affix_type.into(),
+            tier: tier.into(),
+            score: 40,
+        }
     }
 }

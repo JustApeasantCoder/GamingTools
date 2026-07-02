@@ -8,9 +8,9 @@ mod windows_input {
                 SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT,
                 KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
                 MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_RIGHTDOWN,
-                MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, MOUSEINPUT, VK_ESCAPE,
-                VK_LBUTTON, VK_LCONTROL, VK_MBUTTON, VK_MENU, VK_RBUTTON, VK_RCONTROL, VK_RETURN,
-                VK_SHIFT, VK_SPACE, VK_TAB, VK_XBUTTON1, VK_XBUTTON2,
+                MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL, MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP,
+                MOUSEINPUT, VK_ESCAPE, VK_LBUTTON, VK_LCONTROL, VK_MBUTTON, VK_MENU, VK_RBUTTON,
+                VK_RCONTROL, VK_RETURN, VK_SHIFT, VK_SPACE, VK_TAB, VK_XBUTTON1, VK_XBUTTON2,
             },
             WindowsAndMessaging::{GetCursorPos, SetCursorPos},
         },
@@ -90,6 +90,24 @@ mod windows_input {
         }
         thread::sleep(Duration::from_millis(timing.click_release_settle_ms));
         result
+    }
+
+    pub fn right_click_at(x: i32, y: i32, timing: ClickTiming) -> Result<(), String> {
+        move_cursor_to(x, y)?;
+        thread::sleep(Duration::from_millis(timing.cursor_settle_ms));
+
+        send_down("RIGHT CLICK")?;
+        thread::sleep(Duration::from_millis(timing.click_hold_ms));
+        let result = send_up("RIGHT CLICK");
+        if result.is_err() {
+            let _ = send_up("RIGHT CLICK");
+        }
+        thread::sleep(Duration::from_millis(timing.click_release_settle_ms));
+        result
+    }
+
+    pub fn mouse_wheel(delta: i32) -> Result<(), String> {
+        send_mouse(MOUSEEVENTF_WHEEL, delta as u32)
     }
 
     pub fn move_cursor_to(x: i32, y: i32) -> Result<(), String> {
@@ -300,6 +318,14 @@ mod windows_input {
     }
 
     pub fn left_click_at(_x: i32, _y: i32, _timing: ClickTiming) -> Result<(), String> {
+        Err("Mouse automation is only supported on Windows".into())
+    }
+
+    pub fn right_click_at(_x: i32, _y: i32, _timing: ClickTiming) -> Result<(), String> {
+        Err("Mouse automation is only supported on Windows".into())
+    }
+
+    pub fn mouse_wheel(_delta: i32) -> Result<(), String> {
         Err("Mouse automation is only supported on Windows".into())
     }
 

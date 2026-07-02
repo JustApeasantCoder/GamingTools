@@ -2355,6 +2355,72 @@ label small {
   grid-template-columns: repeat(3, minmax(90px, 1fr));
 }
 
+.tablet-craft-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.tablet-craft-grid label {
+  display: grid;
+  gap: 7px;
+  color: #9ca8b1;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.tablet-location-row {
+  display: grid;
+  grid-template-columns: minmax(92px, 1fr) minmax(84px, auto);
+  gap: 8px;
+  align-items: center;
+}
+
+.tablet-location-row code {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 0 9px;
+  border: 1px solid #27313a;
+  border-radius: 4px;
+  background: #10171d;
+  color: #dce5e8;
+  font-size: 12px;
+}
+
+.tablet-tier-list {
+  display: grid;
+  gap: 8px;
+}
+
+.tablet-tier-head,
+.tablet-tier-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.9fr) minmax(120px, 0.9fr) minmax(220px, 1.4fr) 92px 70px 76px 92px;
+  gap: 8px;
+  align-items: center;
+}
+
+.tablet-tier-head {
+  padding: 0 4px;
+  color: #9ca8b1;
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.tablet-tier-row {
+  padding: 8px;
+  border: 1px solid #27313a;
+  border-radius: 6px;
+  background: #172029;
+}
+
+.tablet-tier-row .button {
+  width: 100%;
+  min-width: 0;
+}
+
 .tablet-results {
   display: grid;
   gap: 8px;
@@ -2521,6 +2587,17 @@ label small {
   height: 100vh;
   color: #f3f7f8;
   background: #10161b;
+}
+
+@media (max-width: 1450px) {
+  .tablet-overlay-row {
+    grid-template-columns: minmax(280px, 1fr) minmax(220px, 320px);
+  }
+
+  .tablet-grid-settings {
+    grid-column: 1 / -1;
+    grid-template-columns: repeat(3, minmax(150px, 1fr));
+  }
 }
 
 @media (max-width: 1650px) {

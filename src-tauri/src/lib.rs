@@ -48,6 +48,8 @@ pub fn run() {
             commands::test_inventory_stash_rule,
             commands::capture_inventory_stash_snapshot,
             commands::scan_tablet_stash,
+            commands::scan_and_craft_tablets,
+            commands::capture_tablet_craft_location,
             commands::highlight_tablet_slot,
             commands::move_tablet_to_inventory,
             commands::validate_key_sequence,

@@ -167,6 +167,18 @@ pub fn scan_tablet_stash(
 }
 
 #[tauri::command]
+pub fn scan_and_craft_tablets(
+    rule: TabletScannerRule,
+) -> Result<crate::tablets::TabletCraftReport, String> {
+    crate::tablets::scan_and_craft(&rule)
+}
+
+#[tauri::command]
+pub fn capture_tablet_craft_location(wait_ms: u64) -> Result<crate::profiles::ScreenPoint, String> {
+    crate::tablets::capture_cursor_location(wait_ms)
+}
+
+#[tauri::command]
 pub fn highlight_tablet_slot(rule: TabletScannerRule, slot: String) -> Result<(), String> {
     crate::tablets::highlight_slot(&rule, &slot)
 }

@@ -101,6 +101,34 @@ export interface TabletScannerRule {
     height: number
   }
   scanDelayMs: number
+  craft: TabletCraftSettings
+  valueRules: TabletValueRuleConfig[]
+}
+
+export interface ScreenPoint {
+  x: number
+  y: number
+}
+
+export interface TabletCraftSettings {
+  transmutation: ScreenPoint
+  augmentation: ScreenPoint
+  regal: ScreenPoint
+  exalted: ScreenPoint
+  alchemy: ScreenPoint
+  tabSwitchDelayMs: number
+  craftDelayMs: number
+}
+
+export interface TabletValueRuleConfig {
+  id: string
+  label: string
+  tabletMatch: string
+  textMatch: string
+  affixType: 'prefix' | 'suffix' | 'unknown'
+  tier: 'S' | 'A' | 'B'
+  score: number
+  highRollAt?: number
 }
 
 export interface InventorySlotSnapshot {
@@ -136,6 +164,18 @@ export interface TabletScanReport {
   scannedSlots: number
   tablets: TabletScanItem[]
   skippedSlots: string[]
+}
+
+export interface TabletCraftAction {
+  slot: string
+  currency: 'transmutation' | 'augmentation' | 'regal' | 'exalted' | 'alchemy'
+  reason: string
+}
+
+export interface TabletCraftReport {
+  initialScan: TabletScanReport
+  finalScan: TabletScanReport
+  actions: TabletCraftAction[]
 }
 
 export interface TabletScanEvent {

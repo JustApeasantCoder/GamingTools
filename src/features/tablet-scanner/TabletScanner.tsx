@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { emitTo, listen } from '@tauri-apps/api/event'
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow'
-import { Crosshair, ExternalLink, Grid3X3, PackagePlus, Search, ShieldCheck, X } from 'lucide-react'
-import type { AppProfile, TabletScanEvent, TabletScanReport, TabletScannerRule } from '../../shared/types/profile'
+import { Crosshair, ExternalLink, Grid3X3, Hammer, PackagePlus, Plus, Search, ShieldCheck, Trash2, X } from 'lucide-react'
+import type { AppProfile, ScreenPoint, TabletCraftReport, TabletScanEvent, TabletScanReport, TabletScannerRule, TabletValueRuleConfig } from '../../shared/types/profile'
+import { callBackend } from '../../shared/api/client'
 import { Button } from '../../shared/ui/Button'
 import { KeyCaptureButton } from '../../shared/ui/KeyCaptureButton'
 
@@ -10,18 +11,34 @@ interface TabletScannerProps {
   profile: AppProfile
   onProfileChange: (profile: AppProfile) => void
   onScan: (rule: TabletScannerRule) => Promise<TabletScanReport>
+  onScanAndCraft: (rule: TabletScannerRule) => Promise<TabletCraftReport>
   onHighlightSlot: (rule: TabletScannerRule, slot: string) => Promise<void>
   onMoveToInventory: (rule: TabletScannerRule, slot: string) => Promise<void>
   onGetForegroundApp: () => Promise<{ executable: string; path: string }>
 }
 
-export function TabletScanner({ profile, onProfileChange, onScan, onHighlightSlot, onMoveToInventory, onGetForegroundApp }: TabletScannerProps) {
+type CraftCurrency = keyof TabletScannerRule['craft']
+type CraftLocationKey = Exclude<CraftCurrency, 'tabSwitchDelayMs' | 'craftDelayMs'>
+
+const craftCurrencyLabels: Record<CraftLocationKey, string> = {
+  transmutation: 'Transmutation',
+  augmentation: 'Augmentation',
+  regal: 'Regal',
+  exalted: 'Exalted',
+  alchemy: 'Alchemy',
+}
+
+export function TabletScanner({ profile, onProfileChange, onScan, onScanAndCraft, onHighlightSlot, onMoveToInventory, onGetForegroundApp }: TabletScannerProps) {
   const rule = normalizeRule(profile.tabletScannerRules?.[0])
   const [scanState, setScanState] = useState<'idle' | 'scanning' | 'ready' | 'error'>('idle')
+  const [craftState, setCraftState] = useState<'idle' | 'crafting' | 'ready' | 'error'>('idle')
   const [report, setReport] = useState<TabletScanReport>()
+  const [craftReport, setCraftReport] = useState<TabletCraftReport>()
   const [scanError, setScanError] = useState<string>()
+  const [craftError, setCraftError] = useState<string>()
   const [selectedSlot, setSelectedSlot] = useState<string>()
   const [captureState, setCaptureState] = useState<'idle' | 'waiting' | 'error'>('idle')
+  const [locationCapture, setLocationCapture] = useState<CraftLocationKey | undefined>()
   const [overlayOpen, setOverlayOpen] = useState(false)
   const [overlayError, setOverlayError] = useState<string>()
   const ruleRef = useRef(rule)
@@ -41,6 +58,7 @@ export function TabletScanner({ profile, onProfileChange, onScan, onHighlightSlo
   }, [rule])
 
   useEffect(() => {
+    if (!hasTauriRuntime()) return
     let unlistenGrid: (() => void) | undefined
     let unlistenReady: (() => void) | undefined
     let unlistenClosed: (() => void) | undefined
@@ -72,6 +90,7 @@ export function TabletScanner({ profile, onProfileChange, onScan, onHighlightSlo
   }, [updateRule])
 
   useEffect(() => {
+    if (!hasTauriRuntime()) return
     let unlistenScan: (() => void) | undefined
     void listen<TabletScanEvent>('tablet-scan-report', (event) => {
       if (event.payload.ruleId !== ruleRef.current.id) return
@@ -137,6 +156,21 @@ export function TabletScanner({ profile, onProfileChange, onScan, onHighlightSlo
     }
   }
 
+  const scanAndCraft = async () => {
+    setCraftState('crafting')
+    setCraftError(undefined)
+    try {
+      const nextReport = await onScanAndCraft(targetRule)
+      setCraftReport(nextReport)
+      setReport(nextReport.finalScan)
+      setScanState('ready')
+      setCraftState('ready')
+    } catch (error) {
+      setCraftError(error instanceof Error ? error.message : String(error))
+      setCraftState('error')
+    }
+  }
+
   const captureTarget = async () => {
     setCaptureState('waiting')
     setTimeout(() => {
@@ -159,6 +193,45 @@ export function TabletScanner({ profile, onProfileChange, onScan, onHighlightSlo
     await onMoveToInventory(targetRule, slot)
   }
 
+  const captureCraftLocation = async (currency: CraftLocationKey) => {
+    setLocationCapture(currency)
+    try {
+      const point = await callBackend<ScreenPoint>('capture_tablet_craft_location', { waitMs: 2500 })
+      updateRule({ ...ruleRef.current, craft: { ...ruleRef.current.craft, [currency]: point } })
+    } finally {
+      setLocationCapture(undefined)
+    }
+  }
+
+  const addValueRule = () => {
+    updateRule({
+      ...rule,
+      valueRules: [
+        ...rule.valueRules,
+        {
+          id: crypto.randomUUID(),
+          label: 'Custom roll',
+          tabletMatch: '',
+          textMatch: '',
+          affixType: 'suffix',
+          tier: 'A',
+          score: 40,
+        },
+      ],
+    })
+  }
+
+  const updateValueRule = (id: string, patch: Partial<TabletValueRuleConfig>) => {
+    updateRule({
+      ...rule,
+      valueRules: rule.valueRules.map((item) => item.id === id ? { ...item, ...patch } : item),
+    })
+  }
+
+  const removeValueRule = (id: string) => {
+    updateRule({ ...rule, valueRules: rule.valueRules.filter((item) => item.id !== id) })
+  }
+
   return (
     <div className="feature-surface tablet-scanner">
       <section className="macro-summary">
@@ -176,6 +249,9 @@ export function TabletScanner({ profile, onProfileChange, onScan, onHighlightSlo
           <span className={`test-status ${scanState === 'error' ? 'error' : scanState === 'ready' ? 'matching' : ''}`}>{scanLabel(scanState, report)}</span>
           <Button icon={Search} variant="primary" onClick={scan} disabled={scanState === 'scanning'}>
             {scanState === 'scanning' ? 'Scanning...' : 'Scan stash'}
+          </Button>
+          <Button icon={Hammer} variant="primary" onClick={scanAndCraft} disabled={craftState === 'crafting'}>
+            {craftState === 'crafting' ? 'Crafting...' : 'Scan and craft'}
           </Button>
         </div>
       </section>
@@ -218,7 +294,63 @@ export function TabletScanner({ profile, onProfileChange, onScan, onHighlightSlo
       <section className="workflow-section">
         <header><span><ShieldCheck size={16} /></span><div><h3>Scan behavior</h3><p>Moves the cursor over each configured slot, copies the hovered item text, then ranks known valuable tablet rolls locally.</p></div></header>
         {scanError ? <div className="notice notice-error">{scanError}</div> : null}
+        {craftError ? <div className="notice notice-error">{craftError}</div> : null}
+        {craftReport ? <div className="notice">{craftReport.actions.length} craft action{craftReport.actions.length === 1 ? '' : 's'} completed. Final scan found {craftReport.finalScan.tablets.length} tablet{craftReport.finalScan.tablets.length === 1 ? '' : 's'}.</div> : null}
         {report ? <TabletResults report={report} selectedSlot={selectedSlot} onHighlightSlot={highlightSlot} onMoveToInventory={moveToInventory} /> : <div className="empty-panel">Scan results will appear here.</div>}
+      </section>
+
+      <section className="workflow-section">
+        <header><span>2</span><div><h3>Craft setup</h3><p>Pick each currency location, then the scanner can switch tabs and apply currency in efficient passes.</p></div></header>
+        <div className="tablet-craft-grid">
+          {(Object.keys(craftCurrencyLabels) as CraftLocationKey[]).map((currency) => (
+            <label key={currency}>
+              {craftCurrencyLabels[currency]}
+              <div className="tablet-location-row">
+                <code>{pointLabel(rule.craft[currency])}</code>
+                <Button icon={Crosshair} onClick={() => captureCraftLocation(currency)} disabled={locationCapture !== undefined}>
+                  {locationCapture === currency ? 'Place cursor...' : 'Pick'}
+                </Button>
+              </div>
+            </label>
+          ))}
+          <label>Tab wait ms<input type="number" min={20} max={1000} value={rule.craft.tabSwitchDelayMs} onChange={(event) => updateRule({ ...rule, craft: { ...rule.craft, tabSwitchDelayMs: clamp(Number(event.target.value), 20, 1000) } })} /></label>
+          <label>Craft wait ms<input type="number" min={20} max={2000} value={rule.craft.craftDelayMs} onChange={(event) => updateRule({ ...rule, craft: { ...rule.craft, craftDelayMs: clamp(Number(event.target.value), 20, 2000) } })} /></label>
+        </div>
+      </section>
+
+      <section className="workflow-section">
+        <header><span>3</span><div><h3>Tier list</h3><p>Add custom roll matches for the scanner and craft decisions. Built-in tablet rolls still apply.</p></div></header>
+        <div className="tablet-tier-list">
+          <div className="tablet-tier-head">
+            <span>Name</span>
+            <span>Tablet contains</span>
+            <span>Mod contains</span>
+            <span>Type</span>
+            <span>Tier</span>
+            <span>Score</span>
+            <span></span>
+          </div>
+          {rule.valueRules.map((valueRule) => (
+            <div className="tablet-tier-row" key={valueRule.id}>
+              <input value={valueRule.label} onChange={(event) => updateValueRule(valueRule.id, { label: event.target.value })} />
+              <input value={valueRule.tabletMatch} onChange={(event) => updateValueRule(valueRule.id, { tabletMatch: event.target.value })} placeholder="optional" />
+              <input value={valueRule.textMatch} onChange={(event) => updateValueRule(valueRule.id, { textMatch: event.target.value })} placeholder="required text" />
+              <select value={valueRule.affixType} onChange={(event) => updateValueRule(valueRule.id, { affixType: event.target.value as TabletValueRuleConfig['affixType'] })}>
+                <option value="prefix">Prefix</option>
+                <option value="suffix">Suffix</option>
+              </select>
+              <select value={valueRule.tier} onChange={(event) => updateValueRule(valueRule.id, { tier: event.target.value as TabletValueRuleConfig['tier'] })}>
+                <option value="S">S</option>
+                <option value="A">A</option>
+                <option value="B">B</option>
+              </select>
+              <input type="number" min={1} max={200} value={valueRule.score} onChange={(event) => updateValueRule(valueRule.id, { score: clamp(Number(event.target.value), 1, 200) })} />
+              <Button icon={Trash2} onClick={() => removeValueRule(valueRule.id)} title="Remove custom roll">Remove</Button>
+            </div>
+          ))}
+          {rule.valueRules.length === 0 ? <div className="empty-panel">No custom rolls yet.</div> : null}
+          <Button icon={Plus} onClick={addValueRule}>Add custom roll</Button>
+        </div>
       </section>
     </div>
   )
@@ -284,11 +416,23 @@ function normalizeRule(rule?: TabletScannerRule): TabletScannerRule {
     rows: 12,
     grid: { x: 18, y: 126, width: 632, height: 632 },
     scanDelayMs: 90,
+    craft: {
+      transmutation: { x: 0, y: 0 },
+      augmentation: { x: 0, y: 0 },
+      regal: { x: 0, y: 0 },
+      exalted: { x: 0, y: 0 },
+      alchemy: { x: 0, y: 0 },
+      tabSwitchDelayMs: 120,
+      craftDelayMs: 90,
+    },
+    valueRules: [],
   }
   return {
     ...defaultRule,
     ...rule,
     grid: { ...defaultRule.grid, ...rule?.grid },
+    craft: { ...defaultRule.craft, ...rule?.craft },
+    valueRules: rule?.valueRules ?? [],
   }
 }
 
@@ -335,4 +479,9 @@ function slotLabel(slot: string) {
 function clamp(value: number, min: number, max: number) {
   if (!Number.isFinite(value)) return min
   return Math.min(max, Math.max(min, value))
+}
+
+function pointLabel(point: ScreenPoint) {
+  if (!point.x && !point.y) return 'Not picked'
+  return `${point.x}, ${point.y}`
 }

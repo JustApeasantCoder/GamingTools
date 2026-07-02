@@ -127,6 +127,64 @@ pub struct InventorySlotSnapshot {
     pub color: String,
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ScreenPoint {
+    pub x: i32,
+    pub y: i32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TabletCraftSettings {
+    #[serde(default)]
+    pub transmutation: ScreenPoint,
+    #[serde(default)]
+    pub augmentation: ScreenPoint,
+    #[serde(default)]
+    pub regal: ScreenPoint,
+    #[serde(default)]
+    pub exalted: ScreenPoint,
+    #[serde(default)]
+    pub alchemy: ScreenPoint,
+    #[serde(default = "default_tab_switch_delay_ms")]
+    pub tab_switch_delay_ms: u64,
+    #[serde(default = "default_tablet_craft_delay_ms")]
+    pub craft_delay_ms: u64,
+}
+
+impl Default for TabletCraftSettings {
+    fn default() -> Self {
+        Self {
+            transmutation: ScreenPoint::default(),
+            augmentation: ScreenPoint::default(),
+            regal: ScreenPoint::default(),
+            exalted: ScreenPoint::default(),
+            alchemy: ScreenPoint::default(),
+            tab_switch_delay_ms: default_tab_switch_delay_ms(),
+            craft_delay_ms: default_tablet_craft_delay_ms(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TabletValueRuleConfig {
+    pub id: String,
+    pub label: String,
+    #[serde(default)]
+    pub tablet_match: String,
+    pub text_match: String,
+    #[serde(default = "default_tablet_affix_type")]
+    pub affix_type: String,
+    #[serde(default = "default_tablet_value_tier")]
+    pub tier: String,
+    #[serde(default = "default_tablet_value_score")]
+    pub score: u16,
+    #[serde(default)]
+    pub high_roll_at: Option<u16>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct InventoryStashRule {
@@ -179,6 +237,10 @@ pub struct TabletScannerRule {
     pub grid: InventoryGrid,
     #[serde(default = "default_tablet_scanner_delay_ms")]
     pub scan_delay_ms: u64,
+    #[serde(default)]
+    pub craft: TabletCraftSettings,
+    #[serde(default)]
+    pub value_rules: Vec<TabletValueRuleConfig>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -573,6 +635,26 @@ fn default_tablet_scanner_trigger_key() -> String {
     "F9".into()
 }
 
+fn default_tab_switch_delay_ms() -> u64 {
+    120
+}
+
+fn default_tablet_craft_delay_ms() -> u64 {
+    90
+}
+
+fn default_tablet_affix_type() -> String {
+    "unknown".into()
+}
+
+fn default_tablet_value_tier() -> String {
+    "A".into()
+}
+
+fn default_tablet_value_score() -> u16 {
+    40
+}
+
 fn default_store() -> ProfileStore {
     ProfileStore {
         active_profile_id: "default".into(),
@@ -714,6 +796,8 @@ fn default_tablet_scanner_rule() -> TabletScannerRule {
         rows: default_tablet_scanner_rows(),
         grid: default_tablet_scanner_grid(),
         scan_delay_ms: default_tablet_scanner_delay_ms(),
+        craft: TabletCraftSettings::default(),
+        value_rules: Vec::new(),
     }
 }
 

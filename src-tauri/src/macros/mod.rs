@@ -332,6 +332,33 @@ pub fn validate_profile(profile: &Profile) -> ValidationResult {
         if rule.scan_delay_ms > 5_000 {
             errors.push(format!("{} scan delay is too high", rule.name));
         }
+        if rule.craft.craft_delay_ms > 5_000 {
+            errors.push(format!("{} craft wait is too high", rule.name));
+        }
+        if rule.craft.tab_switch_delay_ms > 5_000 {
+            errors.push(format!("{} tab wait is too high", rule.name));
+        }
+        for value_rule in &rule.value_rules {
+            validate_id(&value_rule.id, "tablet value rule", &mut ids, &mut errors);
+            if value_rule.text_match.trim().is_empty() {
+                errors.push(format!(
+                    "{} value rule {} is missing match text",
+                    rule.name, value_rule.label
+                ));
+            }
+            if !matches!(value_rule.affix_type.as_str(), "prefix" | "suffix") {
+                errors.push(format!(
+                    "{} value rule {} must be a prefix or suffix",
+                    rule.name, value_rule.label
+                ));
+            }
+            if !matches!(value_rule.tier.as_str(), "S" | "A" | "B") {
+                errors.push(format!(
+                    "{} value rule {} must use S, A, or B tier",
+                    rule.name, value_rule.label
+                ));
+            }
+        }
     }
 
     ValidationResult {
