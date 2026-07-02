@@ -8,12 +8,13 @@ import {
   Play,
   Settings,
   Square,
+  Tablet,
   Warehouse,
   ToggleRight,
 } from 'lucide-react'
 import './App.css'
 import { callBackend } from './shared/api/client'
-import type { AppProfile, MacroStep, PixelSampleRequest, ProfileStore } from './shared/types/profile'
+import type { AppProfile, MacroStep, PixelSampleRequest, ProfileStore, TabletScanReport } from './shared/types/profile'
 import { MacroBuilder } from './features/macros/MacroBuilder'
 import { MacroInspector } from './features/macros/MacroInspector'
 import { getProfileTimingIssues } from './features/macros/macroTiming'
@@ -23,12 +24,13 @@ import { getPixelRuleIssues } from './features/pixel-trigger/pixelRuleValidation
 import { ToggleHold } from './features/toggle-hold/ToggleHold'
 import { getToggleHoldRuleIssues } from './features/toggle-hold/toggleHoldValidation'
 import { InventoryStash } from './features/inventory-stash/InventoryStash'
+import { TabletScanner } from './features/tablet-scanner/TabletScanner'
 import { ProfileRail } from './features/profiles/ProfileRail'
 import { Button } from './shared/ui/Button'
 import { SettingsPanel } from './features/settings/SettingsPanel'
 import { ProfileSettings } from './features/profiles/ProfileSettings'
 
-type FeatureTab = 'macros' | 'pixels' | 'toggleHold' | 'inventoryStash' | 'profile' | 'settings'
+type FeatureTab = 'macros' | 'pixels' | 'toggleHold' | 'inventoryStash' | 'tabletScanner' | 'profile' | 'settings'
 type RuntimeEventPayload = {
   kind: string
   message: string
@@ -125,6 +127,18 @@ const defaultStore: ProfileStore = {
           waystoneSlots: [],
           snapshotColors: [],
           humanization: { enabled: true, minMs: 120, maxMs: 240 },
+        },
+      ],
+      tabletScannerRules: [
+        {
+          id: 'tablet-scanner-default',
+          name: 'Tablet stash scanner',
+          triggerKey: 'F9',
+          targetExecutable: '',
+          columns: 12,
+          rows: 12,
+          grid: { x: 18, y: 126, width: 632, height: 632 },
+          scanDelayMs: 90,
         },
       ],
     },
@@ -417,6 +431,27 @@ function App() {
     return snapshots
   }
 
+  const handleScanTabletStash = async (rule: AppProfile['tabletScannerRules'][number]) => {
+    const report = await callBackend<TabletScanReport>('scan_tablet_stash', { rule })
+    const valuableCount = report.tablets.filter((tablet) => tablet.valueTier !== 'Low').length
+    addLog(`${rule.name} scan: ${report.tablets.length} tablet${report.tablets.length === 1 ? '' : 's'} found, ${valuableCount} worth checking`)
+    return report
+  }
+
+  const handleHighlightTabletSlot = async (rule: AppProfile['tabletScannerRules'][number], slot: string) => {
+    await callBackend('highlight_tablet_slot', { rule, slot })
+    addLog(`${rule.name}: highlighted slot ${slot}`)
+  }
+
+  const handleMoveTabletToInventory = async (rule: AppProfile['tabletScannerRules'][number], slot: string) => {
+    await callBackend('move_tablet_to_inventory', { rule, slot })
+    addLog(`${rule.name}: moved slot ${slot} to inventory`)
+  }
+
+  const handleGetForegroundApp = async () => {
+    return callBackend<{ executable: string; path: string }>('get_foreground_app')
+  }
+
   const handleAddProfile = async () => {
     await saveQueue.current
     const id = crypto.randomUUID()
@@ -437,6 +472,7 @@ function App() {
       pixelRules: [],
       toggleHoldRules: [],
       inventoryStashRules: [],
+      tabletScannerRules: [],
     }
     try {
       await callBackend('save_profile', { profile: newProfile })
@@ -501,6 +537,9 @@ function App() {
           </button>
           <button className={activeTab === 'inventoryStash' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveTab('inventoryStash')}>
             <Warehouse size={18} /> Inventory Stash
+          </button>
+          <button className={activeTab === 'tabletScanner' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveTab('tabletScanner')}>
+            <Tablet size={18} /> Tablet Scanner
           </button>
         </nav>
 
@@ -593,6 +632,15 @@ function App() {
                 onTestRule={handleTestInventoryStashRule}
                 onCaptureSnapshot={handleCaptureInventoryStashSnapshot}
               />
+            ) : activeTab === 'tabletScanner' ? (
+              <TabletScanner
+                profile={activeProfile}
+                onProfileChange={updateActiveProfile}
+                onScan={handleScanTabletStash}
+                onHighlightSlot={handleHighlightTabletSlot}
+                onMoveToInventory={handleMoveTabletToInventory}
+                onGetForegroundApp={handleGetForegroundApp}
+              />
             ) : activeTab === 'profile' ? (
               <ProfileSettings
                 profile={activeProfile}
@@ -657,6 +705,7 @@ function App() {
                 <dt>Pixel triggers</dt><dd>{activeProfile.pixelRules.length}</dd>
                 <dt>Toggle Hold</dt><dd>{activeProfile.toggleHoldRules.length}</dd>
                 <dt>Inventory stash</dt><dd>{activeProfile.inventoryStashRules?.length ?? 0}</dd>
+                <dt>Tablet scanner</dt><dd>{activeProfile.tabletScannerRules?.length ?? 0}</dd>
                 <dt>Automation</dt><dd>{isRunning ? 'Running' : 'Stopped'}</dd>
               </dl>
             ) : null}
@@ -694,6 +743,7 @@ function duplicateProfileWithNewIds(profile: AppProfile, profiles: AppProfile[])
     })),
     toggleHoldRules: profile.toggleHoldRules.map((rule) => ({ ...rule, id: crypto.randomUUID() })),
     inventoryStashRules: (profile.inventoryStashRules ?? []).map((rule) => ({ ...rule, id: crypto.randomUUID() })),
+    tabletScannerRules: (profile.tabletScannerRules ?? []).map((rule) => ({ ...rule, id: crypto.randomUUID() })),
   }
 }
 

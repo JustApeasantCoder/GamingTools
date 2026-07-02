@@ -87,9 +87,60 @@ export interface InventoryStashRule {
   humanization: HumanizationSettings
 }
 
+export interface TabletScannerRule {
+  id: string
+  name: string
+  triggerKey: string
+  targetExecutable: string
+  columns: number
+  rows: number
+  grid: {
+    x: number
+    y: number
+    width: number
+    height: number
+  }
+  scanDelayMs: number
+}
+
 export interface InventorySlotSnapshot {
   slot: string
   color: string
+}
+
+export interface TabletValueMod {
+  text: string
+  affixType: 'prefix' | 'suffix' | 'unknown'
+  tier: 'S' | 'A' | 'B' | 'C'
+  score: number
+}
+
+export interface TabletScanItem {
+  slot: string
+  column: number
+  row: number
+  name?: string
+  tabletType: string
+  rarity: string
+  usesRemaining?: number
+  valueTier: 'S' | 'A' | 'B' | 'C' | 'Low'
+  valueScore: number
+  prefixes: TabletValueMod[]
+  suffixes: TabletValueMod[]
+  unknownMods: string[]
+  reasons: string[]
+  rawText: string
+}
+
+export interface TabletScanReport {
+  scannedSlots: number
+  tablets: TabletScanItem[]
+  skippedSlots: string[]
+}
+
+export interface TabletScanEvent {
+  ruleId: string
+  report: TabletScanReport
 }
 
 export interface AppProfile {
@@ -109,6 +160,7 @@ export interface AppProfile {
   pixelRules: PixelRule[]
   toggleHoldRules: ToggleHoldRule[]
   inventoryStashRules: InventoryStashRule[]
+  tabletScannerRules: TabletScannerRule[]
 }
 
 export interface ProfileStore {

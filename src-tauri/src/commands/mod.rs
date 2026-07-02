@@ -1,11 +1,11 @@
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
 use crate::{
     input,
     macros::ValidationResult,
     profiles::{
         self, InventorySlotSnapshot, InventoryStashRule, PixelPoint, PixelRule, Profile,
-        ProfileStore,
+        ProfileStore, TabletScannerRule,
     },
     recorder::RecorderState,
     runtime::RuntimeState,
@@ -157,6 +157,32 @@ pub fn capture_inventory_stash_snapshot(
     rule: InventoryStashRule,
 ) -> Result<Vec<InventorySlotSnapshot>, String> {
     crate::inventory::capture_snapshot(&rule)
+}
+
+#[tauri::command]
+pub fn scan_tablet_stash(
+    rule: TabletScannerRule,
+) -> Result<crate::tablets::TabletScanReport, String> {
+    crate::tablets::scan_stash(&rule)
+}
+
+#[tauri::command]
+pub fn highlight_tablet_slot(rule: TabletScannerRule, slot: String) -> Result<(), String> {
+    crate::tablets::highlight_slot(&rule, &slot)
+}
+
+#[tauri::command]
+pub fn move_tablet_to_inventory(
+    app: AppHandle,
+    rule: TabletScannerRule,
+    slot: String,
+) -> Result<(), String> {
+    crate::tablets::move_slot_to_inventory(&rule, &slot)?;
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+    Ok(())
 }
 
 #[tauri::command]

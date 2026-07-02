@@ -20,6 +20,7 @@ use crate::{
         ToggleHoldRule,
     },
     screen,
+    tablets::TabletScanReport,
 };
 
 #[derive(Clone, Serialize)]
@@ -31,6 +32,13 @@ struct RuntimeEvent {
     rule_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     snapshot_colors: Option<Vec<InventorySlotSnapshot>>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TabletScanEvent {
+    rule_id: String,
+    report: TabletScanReport,
 }
 
 #[derive(Default)]
@@ -237,6 +245,8 @@ impl InputOwners {
 pub fn start_hotkey_monitor(app: AppHandle) {
     thread::spawn(move || {
         let mut waiting_for_release = false;
+        let mut tablet_scanner_pressed = HashSet::new();
+        let tablet_scan_active = Arc::new(AtomicBool::new(false));
         let mut profile: Option<Profile> = None;
         let mut last_refresh = Instant::now() - Duration::from_secs(1);
         loop {
@@ -266,6 +276,53 @@ pub fn start_hotkey_monitor(app: AppHandle) {
                     }
                 } else if let Err(error) = state.start(app.clone(), active_profile.clone()) {
                     emit_event(&app, "error", error);
+                }
+            }
+
+            for rule in &active_profile.tablet_scanner_rules {
+                let is_down = input::is_key_down(&rule.trigger_key);
+                let was_down = tablet_scanner_pressed.contains(&rule.id);
+                if is_down && !was_down {
+                    tablet_scanner_pressed.insert(rule.id.clone());
+                } else if !is_down && was_down {
+                    tablet_scanner_pressed.remove(&rule.id);
+                    if tablet_scan_active
+                        .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+                        .is_ok()
+                    {
+                        let app = app.clone();
+                        let mut rule = rule.clone();
+                        if rule.target_executable.trim().is_empty() {
+                            rule.target_executable = active_profile
+                                .runtime_settings
+                                .foreground_guard
+                                .executable
+                                .clone();
+                        }
+                        let scan_active = Arc::clone(&tablet_scan_active);
+                        thread::spawn(move || {
+                            emit_event(
+                                &app,
+                                "tabletScanner",
+                                format!(
+                                    "Tablet scanner shortcut pressed: {} ({})",
+                                    rule.name, rule.trigger_key
+                                ),
+                            );
+                            match crate::tablets::scan_stash(&rule) {
+                                Ok(report) => emit_tablet_scan_event(
+                                    &app,
+                                    &rule.id,
+                                    report,
+                                    format!("{} scan finished", rule.name),
+                                ),
+                                Err(error) => {
+                                    emit_event(&app, "error", format!("{}: {error}", rule.name))
+                                }
+                            }
+                            scan_active.store(false, Ordering::Relaxed);
+                        });
+                    }
                 }
             }
 
@@ -1080,6 +1137,31 @@ fn emit_snapshot_event(
             rule_id: Some(rule_id.into()),
             snapshot_colors: Some(snapshot_colors),
         },
+    );
+}
+
+fn emit_tablet_scan_event(
+    app: &AppHandle,
+    rule_id: &str,
+    report: TabletScanReport,
+    message: impl Into<String>,
+) {
+    let tablet_count = report.tablets.len();
+    let _ = app.emit(
+        "tablet-scan-report",
+        TabletScanEvent {
+            rule_id: rule_id.into(),
+            report,
+        },
+    );
+    emit_event(
+        app,
+        "tabletScanner",
+        format!(
+            "{}: {tablet_count} tablet{} found",
+            message.into(),
+            if tablet_count == 1 { "" } else { "s" }
+        ),
     );
 }
 

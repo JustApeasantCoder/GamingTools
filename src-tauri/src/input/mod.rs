@@ -1,14 +1,20 @@
 #[cfg(windows)]
 mod windows_input {
     use std::{mem::size_of, thread, time::Duration};
-    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-        SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_KEYUP,
-        MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP,
-        MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, MOUSEINPUT,
-        VK_CONTROL, VK_ESCAPE, VK_LBUTTON, VK_MBUTTON, VK_MENU, VK_RBUTTON, VK_RETURN, VK_SHIFT,
-        VK_SPACE, VK_TAB, VK_XBUTTON1, VK_XBUTTON2,
+    use windows_sys::Win32::{
+        Foundation::POINT,
+        UI::{
+            Input::KeyboardAndMouse::{
+                SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT,
+                KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
+                MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_RIGHTDOWN,
+                MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, MOUSEINPUT, VK_ESCAPE,
+                VK_LBUTTON, VK_LCONTROL, VK_MBUTTON, VK_MENU, VK_RBUTTON, VK_RCONTROL, VK_RETURN,
+                VK_SHIFT, VK_SPACE, VK_TAB, VK_XBUTTON1, VK_XBUTTON2,
+            },
+            WindowsAndMessaging::{GetCursorPos, SetCursorPos},
+        },
     };
-    use windows_sys::Win32::UI::WindowsAndMessaging::SetCursorPos;
 
     const XBUTTON1_MOUSE_DATA: u32 = 0x0001;
     const XBUTTON2_MOUSE_DATA: u32 = 0x0002;
@@ -57,6 +63,8 @@ mod windows_input {
                 "TAB",
                 "SHIFT",
                 "CTRL",
+                "RIGHT CTRL",
+                "LEFT CTRL",
                 "ALT",
                 "LEFT CLICK",
                 "RIGHT CLICK",
@@ -71,16 +79,10 @@ mod windows_input {
     }
 
     pub fn left_click_at(x: i32, y: i32, timing: ClickTiming) -> Result<(), String> {
-        unsafe {
-            if SetCursorPos(x, y) == 0 {
-                return Err("Unable to move cursor to inventory slot".into());
-            }
-        }
+        move_cursor_to(x, y)?;
         thread::sleep(Duration::from_millis(timing.cursor_settle_ms));
 
-        if let Err(error) = send_down("LEFT CLICK") {
-            return Err(error);
-        }
+        send_down("LEFT CLICK")?;
         thread::sleep(Duration::from_millis(timing.click_hold_ms));
         let result = send_up("LEFT CLICK");
         if result.is_err() {
@@ -90,9 +92,28 @@ mod windows_input {
         result
     }
 
+    pub fn move_cursor_to(x: i32, y: i32) -> Result<(), String> {
+        unsafe {
+            if SetCursorPos(x, y) == 0 {
+                return Err("Unable to move cursor".into());
+            }
+        }
+        Ok(())
+    }
+
+    pub fn cursor_position() -> Result<(i32, i32), String> {
+        let mut point = POINT { x: 0, y: 0 };
+        let result = unsafe { GetCursorPos(&mut point) };
+        if result == 0 {
+            Err("Unable to read cursor position".into())
+        } else {
+            Ok((point.x, point.y))
+        }
+    }
+
     fn send_down(key: &str) -> Result<(), String> {
         match input_code(key).ok_or_else(|| format!("Unsupported key: {key}"))? {
-            InputCode::Keyboard(vk) => send_keyboard(vk, false),
+            InputCode::Keyboard { vk, flags } => send_keyboard(vk, flags, false),
             InputCode::Mouse {
                 down, mouse_data, ..
             } => send_mouse(down, mouse_data),
@@ -101,19 +122,19 @@ mod windows_input {
 
     fn send_up(key: &str) -> Result<(), String> {
         match input_code(key).ok_or_else(|| format!("Unsupported key: {key}"))? {
-            InputCode::Keyboard(vk) => send_keyboard(vk, true),
+            InputCode::Keyboard { vk, flags } => send_keyboard(vk, flags, true),
             InputCode::Mouse { up, mouse_data, .. } => send_mouse(up, mouse_data),
         }
     }
 
-    fn send_keyboard(vk: u16, key_up: bool) -> Result<(), String> {
+    fn send_keyboard(vk: u16, flags: u32, key_up: bool) -> Result<(), String> {
         let input = INPUT {
             r#type: INPUT_KEYBOARD,
             Anonymous: INPUT_0 {
                 ki: KEYBDINPUT {
                     wVk: vk,
                     wScan: 0,
-                    dwFlags: if key_up { KEYEVENTF_KEYUP } else { 0 },
+                    dwFlags: flags | if key_up { KEYEVENTF_KEYUP } else { 0 },
                     time: 0,
                     dwExtraInfo: 0,
                 },
@@ -152,7 +173,10 @@ mod windows_input {
     }
 
     enum InputCode {
-        Keyboard(u16),
+        Keyboard {
+            vk: u16,
+            flags: u32,
+        },
         Mouse {
             vk: u16,
             down: u32,
@@ -163,7 +187,7 @@ mod windows_input {
 
     fn virtual_key_code(key: &str) -> Option<u16> {
         match input_code(key)? {
-            InputCode::Keyboard(vk) => Some(vk),
+            InputCode::Keyboard { vk, .. } => Some(vk),
             InputCode::Mouse { vk, .. } => Some(vk),
         }
     }
@@ -173,30 +197,33 @@ mod windows_input {
         if normalized.len() == 1 {
             let byte = normalized.as_bytes()[0];
             if byte.is_ascii_alphanumeric() {
-                return Some(InputCode::Keyboard(byte as u16));
+                return Some(keyboard(byte as u16));
             }
         }
 
         match normalized.as_str() {
-            "F1" => Some(InputCode::Keyboard(0x70)),
-            "F2" => Some(InputCode::Keyboard(0x71)),
-            "F3" => Some(InputCode::Keyboard(0x72)),
-            "F4" => Some(InputCode::Keyboard(0x73)),
-            "F5" => Some(InputCode::Keyboard(0x74)),
-            "F6" => Some(InputCode::Keyboard(0x75)),
-            "F7" => Some(InputCode::Keyboard(0x76)),
-            "F8" => Some(InputCode::Keyboard(0x77)),
-            "F9" => Some(InputCode::Keyboard(0x78)),
-            "F10" => Some(InputCode::Keyboard(0x79)),
-            "F11" => Some(InputCode::Keyboard(0x7A)),
-            "F12" => Some(InputCode::Keyboard(0x7B)),
-            "SPACE" | "SPACEBAR" => Some(InputCode::Keyboard(VK_SPACE)),
-            "ENTER" => Some(InputCode::Keyboard(VK_RETURN)),
-            "ESC" | "ESCAPE" => Some(InputCode::Keyboard(VK_ESCAPE)),
-            "TAB" => Some(InputCode::Keyboard(VK_TAB)),
-            "SHIFT" => Some(InputCode::Keyboard(VK_SHIFT)),
-            "CTRL" | "CONTROL" => Some(InputCode::Keyboard(VK_CONTROL)),
-            "ALT" => Some(InputCode::Keyboard(VK_MENU)),
+            "F1" => Some(keyboard(0x70)),
+            "F2" => Some(keyboard(0x71)),
+            "F3" => Some(keyboard(0x72)),
+            "F4" => Some(keyboard(0x73)),
+            "F5" => Some(keyboard(0x74)),
+            "F6" => Some(keyboard(0x75)),
+            "F7" => Some(keyboard(0x76)),
+            "F8" => Some(keyboard(0x77)),
+            "F9" => Some(keyboard(0x78)),
+            "F10" => Some(keyboard(0x79)),
+            "F11" => Some(keyboard(0x7A)),
+            "F12" => Some(keyboard(0x7B)),
+            "SPACE" | "SPACEBAR" => Some(keyboard(VK_SPACE)),
+            "ENTER" => Some(keyboard(VK_RETURN)),
+            "ESC" | "ESCAPE" => Some(keyboard(VK_ESCAPE)),
+            "TAB" => Some(keyboard(VK_TAB)),
+            "SHIFT" => Some(keyboard(VK_SHIFT)),
+            "CTRL" | "CONTROL" | "RIGHT CTRL" | "RIGHT CONTROL" | "RCTRL" | "RCONTROL" => {
+                Some(right_control())
+            }
+            "LEFT CTRL" | "LEFT CONTROL" | "LCTRL" | "LCONTROL" => Some(keyboard(VK_LCONTROL)),
+            "ALT" => Some(keyboard(VK_MENU)),
             "LEFT CLICK" => Some(InputCode::Mouse {
                 vk: VK_LBUTTON,
                 down: MOUSEEVENTF_LEFTDOWN,
@@ -228,6 +255,17 @@ mod windows_input {
                 mouse_data: XBUTTON2_MOUSE_DATA,
             }),
             _ => None,
+        }
+    }
+
+    fn keyboard(vk: u16) -> InputCode {
+        InputCode::Keyboard { vk, flags: 0 }
+    }
+
+    fn right_control() -> InputCode {
+        InputCode::Keyboard {
+            vk: VK_RCONTROL,
+            flags: KEYEVENTF_EXTENDEDKEY,
         }
     }
 }
@@ -264,6 +302,14 @@ mod windows_input {
     pub fn left_click_at(_x: i32, _y: i32, _timing: ClickTiming) -> Result<(), String> {
         Err("Mouse automation is only supported on Windows".into())
     }
+
+    pub fn move_cursor_to(_x: i32, _y: i32) -> Result<(), String> {
+        Err("Mouse automation is only supported on Windows".into())
+    }
+
+    pub fn cursor_position() -> Result<(i32, i32), String> {
+        Err("Mouse automation is only supported on Windows".into())
+    }
 }
 
 pub use windows_input::*;
@@ -276,6 +322,9 @@ mod tests {
     fn supports_common_aliases() {
         assert!(supports_key("SPACE"));
         assert!(supports_key("Spacebar"));
+        assert!(supports_key("RIGHT CTRL"));
+        assert!(supports_key("LEFT CTRL"));
+        assert!(supports_key("RCTRL"));
         assert!(supports_key("MOUSE 4"));
         assert!(supports_key("MOUSE 5"));
         assert!(supports_key("XBUTTON1"));

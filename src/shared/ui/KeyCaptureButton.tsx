@@ -71,6 +71,9 @@ export function KeyCaptureButton({ value, onChange, label = 'Change', className 
 }
 
 function normalizeKey(event: KeyboardEvent) {
+  if (event.code === 'ControlRight') return 'RIGHT CTRL'
+  if (event.code === 'ControlLeft') return 'LEFT CTRL'
+
   const specialKeys: Record<string, string> = {
     ' ': 'SPACE',
     Spacebar: 'SPACE',

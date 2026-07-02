@@ -164,6 +164,25 @@ pub struct InventoryStashRule {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct TabletScannerRule {
+    pub id: String,
+    pub name: String,
+    #[serde(default = "default_tablet_scanner_trigger_key")]
+    pub trigger_key: String,
+    #[serde(default)]
+    pub target_executable: String,
+    #[serde(default = "default_tablet_scanner_columns")]
+    pub columns: u8,
+    #[serde(default = "default_tablet_scanner_rows")]
+    pub rows: u8,
+    #[serde(default = "default_tablet_scanner_grid")]
+    pub grid: InventoryGrid,
+    #[serde(default = "default_tablet_scanner_delay_ms")]
+    pub scan_delay_ms: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct Profile {
     pub id: String,
     pub name: String,
@@ -176,6 +195,8 @@ pub struct Profile {
     pub toggle_hold_rules: Vec<ToggleHoldRule>,
     #[serde(default)]
     pub inventory_stash_rules: Vec<InventoryStashRule>,
+    #[serde(default)]
+    pub tablet_scanner_rules: Vec<TabletScannerRule>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -351,6 +372,9 @@ fn regenerate_ids(profile: &mut Profile) {
     for rule in &mut profile.inventory_stash_rules {
         rule.id = uuid::Uuid::new_v4().to_string();
     }
+    for rule in &mut profile.tablet_scanner_rules {
+        rule.id = uuid::Uuid::new_v4().to_string();
+    }
 }
 
 fn default_toggle_release_mode() -> String {
@@ -387,6 +411,11 @@ fn normalize_store(mut store: ProfileStore) -> ProfileStore {
             profile
                 .inventory_stash_rules
                 .push(default_inventory_stash_rule());
+        }
+        if profile.tablet_scanner_rules.is_empty() {
+            profile
+                .tablet_scanner_rules
+                .push(default_tablet_scanner_rule());
         }
     }
     if !store
@@ -519,6 +548,31 @@ fn default_inventory_humanization() -> HumanizationSettings {
     }
 }
 
+fn default_tablet_scanner_columns() -> u8 {
+    12
+}
+
+fn default_tablet_scanner_rows() -> u8 {
+    12
+}
+
+fn default_tablet_scanner_grid() -> InventoryGrid {
+    InventoryGrid {
+        x: 18,
+        y: 126,
+        width: 632,
+        height: 632,
+    }
+}
+
+fn default_tablet_scanner_delay_ms() -> u64 {
+    90
+}
+
+fn default_tablet_scanner_trigger_key() -> String {
+    "F9".into()
+}
+
 fn default_store() -> ProfileStore {
     ProfileStore {
         active_profile_id: "default".into(),
@@ -623,6 +677,7 @@ fn default_store() -> ProfileStore {
                 release_key: String::new(),
             }],
             inventory_stash_rules: vec![default_inventory_stash_rule()],
+            tablet_scanner_rules: vec![default_tablet_scanner_rule()],
         }],
     }
 }
@@ -646,6 +701,19 @@ fn default_inventory_stash_rule() -> InventoryStashRule {
         waystone_slots: Vec::new(),
         snapshot_colors: Vec::new(),
         humanization: default_inventory_humanization(),
+    }
+}
+
+fn default_tablet_scanner_rule() -> TabletScannerRule {
+    TabletScannerRule {
+        id: "tablet-scanner-default".into(),
+        name: "Tablet stash scanner".into(),
+        trigger_key: default_tablet_scanner_trigger_key(),
+        target_executable: String::new(),
+        columns: default_tablet_scanner_columns(),
+        rows: default_tablet_scanner_rows(),
+        grid: default_tablet_scanner_grid(),
+        scan_delay_ms: default_tablet_scanner_delay_ms(),
     }
 }
 
@@ -693,6 +761,7 @@ mod tests {
             pixel_rules: vec![],
             toggle_hold_rules: vec![],
             inventory_stash_rules: vec![],
+            tablet_scanner_rules: vec![],
         });
         store.active_profile_id = "second".into();
 

@@ -3,14 +3,18 @@ import type React from 'react'
 import { emitTo, listen } from '@tauri-apps/api/event'
 import { PhysicalPosition, PhysicalSize, getCurrentWindow } from '@tauri-apps/api/window'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
-import type { InventoryStashRule } from '../../shared/types/profile'
+import type { InventoryStashRule, TabletScannerRule } from '../../shared/types/profile'
 import '../../App.css'
 
 type DragMode = 'move' | 'resize' | undefined
+type OverlayView = 'inventory-overlay' | 'tablet-scanner-overlay'
+type OverlayRule = InventoryStashRule | TabletScannerRule
 
 export function InventoryGridOverlay() {
-  const [rule, setRule] = useState<InventoryStashRule | undefined>(() => ruleFromUrl() ?? (hasTauriRuntime() ? undefined : previewRule()))
-  const ruleRef = useRef<InventoryStashRule | undefined>(rule)
+  const view = overlayViewFromUrl()
+  const events = useMemo(() => overlayEvents(view), [view])
+  const [rule, setRule] = useState<OverlayRule | undefined>(() => ruleFromUrl(view) ?? (hasTauriRuntime() ? undefined : previewRule(view)))
+  const ruleRef = useRef<OverlayRule | undefined>(rule)
   const slots = useMemo(() => createSlots(rule?.columns ?? 12, rule?.rows ?? 5), [rule?.columns, rule?.rows])
 
   useEffect(() => {
@@ -31,7 +35,7 @@ export function InventoryGridOverlay() {
     let unlistenConfig: (() => void) | undefined
     let unlistenMoved: (() => void) | undefined
     let unlistenResized: (() => void) | undefined
-    void listen<InventoryStashRule>('inventory-overlay-config', (event) => {
+    void listen<OverlayRule>(events.config, (event) => {
       setRule(event.payload)
       void syncWindowToPhysicalGrid(appWindow, event.payload.grid).then(() => publishActualGrid(appWindow, ruleRef))
     }).then((dispose) => {
@@ -47,14 +51,14 @@ export function InventoryGridOverlay() {
     }).then((dispose) => {
       unlistenResized = dispose
     })
-    void emitTo('main', 'inventory-overlay-ready')
+    void emitTo('main', events.ready)
 
     return () => {
       unlistenConfig?.()
       unlistenMoved?.()
       unlistenResized?.()
     }
-  }, [])
+  }, [events.config, events.ready])
 
   const beginDrag = (event: React.PointerEvent, mode: DragMode) => {
     if (!rule) return
@@ -75,14 +79,14 @@ export function InventoryGridOverlay() {
   return (
     <main className="inventory-screen-overlay">
       <section
-        className="inventory-screen-grid"
+        className={view === 'tablet-scanner-overlay' ? 'inventory-screen-grid tablet-screen-grid' : 'inventory-screen-grid'}
         style={{
           gridTemplateColumns: `repeat(${rule.columns}, 1fr)`,
           gridTemplateRows: `repeat(${rule.rows}, 1fr)`,
         }}
         onPointerDown={(event) => beginDrag(event, 'move')}
       >
-        <div className="inventory-screen-drag-label">Drag grid</div>
+        <div className="inventory-screen-drag-label">{view === 'tablet-scanner-overlay' ? 'Drag stash grid' : 'Drag grid'}</div>
         {slots.map((slot) => <span key={slot} />)}
         <button className="inventory-screen-close" aria-label="Close inventory grid overlay" onPointerDown={(event) => event.stopPropagation()} onClick={() => void closeOverlay()} />
         <button className="inventory-screen-resize" aria-label="Resize inventory grid" onPointerDown={(event) => { event.stopPropagation(); beginDrag(event, 'resize') }} />
@@ -95,17 +99,33 @@ function hasTauriRuntime() {
   return '__TAURI_INTERNALS__' in window
 }
 
-function previewRule(): InventoryStashRule {
-  return {
+function previewRule(view: OverlayView): OverlayRule {
+  const grid = view === 'tablet-scanner-overlay'
+    ? { x: 18, y: 126, width: 632, height: 632 }
+    : { x: 34, y: 37, width: 844, height: 352 }
+  const base = {
     id: 'inventory-stash-preview',
+    columns: 12,
+    rows: view === 'tablet-scanner-overlay' ? 12 : 5,
+    grid,
+  }
+  if (view === 'tablet-scanner-overlay') {
+    return {
+      ...base,
+      id: 'tablet-scanner-preview',
+      name: 'Tablet stash scanner',
+      triggerKey: 'F9',
+      targetExecutable: '',
+      scanDelayMs: 90,
+    }
+  }
+  return {
+    ...base,
     name: 'Inventory to stash',
     enabled: false,
     triggerKey: 'F6',
     captureBaselineKey: 'F8',
     detectionMode: 'emptyColor',
-    columns: 12,
-    rows: 5,
-    grid: { x: 34, y: 37, width: 844, height: 352 },
     emptyColor: '#0f1110',
     ignoreWaystone: false,
     waystoneColor: '#7a52c8',
@@ -127,9 +147,14 @@ function createSlots(columns: number, rows: number) {
   return slots
 }
 
-function ruleFromUrl(): InventoryStashRule | undefined {
+function overlayViewFromUrl(): OverlayView {
+  const view = new URLSearchParams(window.location.search).get('view')
+  return view === 'tablet-scanner-overlay' ? 'tablet-scanner-overlay' : 'inventory-overlay'
+}
+
+function ruleFromUrl(view: OverlayView): OverlayRule | undefined {
   const params = new URLSearchParams(window.location.search)
-  if (params.get('view') !== 'inventory-overlay') return undefined
+  if (params.get('view') !== view) return undefined
   const x = Number(params.get('x'))
   const y = Number(params.get('y'))
   const width = Number(params.get('width'))
@@ -138,7 +163,7 @@ function ruleFromUrl(): InventoryStashRule | undefined {
   const rows = Number(params.get('rows') ?? 5)
   if (![x, y, width, height, columns, rows].every(Number.isFinite)) return undefined
   return {
-    ...previewRule(),
+    ...previewRule(view),
     columns,
     rows,
     grid: {
@@ -152,18 +177,34 @@ function ruleFromUrl(): InventoryStashRule | undefined {
 
 async function closeOverlay() {
   if (!hasTauriRuntime()) return
-  await emitTo('main', 'inventory-overlay-closed')
+  await emitTo('main', overlayEvents(overlayViewFromUrl()).closed)
   await getCurrentWindow().close()
 }
 
-async function syncWindowToPhysicalGrid(appWindow: ReturnType<typeof getCurrentWindow>, grid: InventoryStashRule['grid']) {
+function overlayEvents(view: OverlayView) {
+  return view === 'tablet-scanner-overlay'
+    ? {
+        config: 'tablet-scanner-overlay-config',
+        ready: 'tablet-scanner-overlay-ready',
+        closed: 'tablet-scanner-overlay-closed',
+        gridChange: 'tablet-scanner-overlay-grid-change',
+      }
+    : {
+        config: 'inventory-overlay-config',
+        ready: 'inventory-overlay-ready',
+        closed: 'inventory-overlay-closed',
+        gridChange: 'inventory-overlay-grid-change',
+      }
+}
+
+async function syncWindowToPhysicalGrid(appWindow: ReturnType<typeof getCurrentWindow>, grid: OverlayRule['grid']) {
   await appWindow.setPosition(new PhysicalPosition(grid.x, grid.y))
   await appWindow.setSize(new PhysicalSize(grid.width, grid.height))
 }
 
 async function publishActualGrid(
   appWindow: ReturnType<typeof getCurrentWindow>,
-  ruleRef: React.MutableRefObject<InventoryStashRule | undefined>,
+  ruleRef: React.MutableRefObject<OverlayRule | undefined>,
 ) {
   const currentRule = ruleRef.current
   if (!currentRule) return
@@ -178,5 +219,5 @@ async function publishActualGrid(
     height: Math.max(80, Math.round(size.height)),
   }
   ruleRef.current = { ...currentRule, grid }
-  await emitTo('main', 'inventory-overlay-grid-change', grid)
+  await emitTo('main', overlayEvents(overlayViewFromUrl()).gridChange, grid)
 }

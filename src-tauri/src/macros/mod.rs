@@ -233,6 +233,12 @@ pub fn validate_profile(profile: &Profile) -> ValidationResult {
                     ]
                 }),
         )
+        .chain(profile.tablet_scanner_rules.iter().map(|rule| {
+            (
+                format!("{} scanner trigger", rule.name),
+                rule.trigger_key.as_str(),
+            )
+        }))
     {
         let normalized = key.trim().to_uppercase();
         if !normalized.is_empty() && !trigger_owners.insert(normalized) {
@@ -301,6 +307,30 @@ pub fn validate_profile(profile: &Profile) -> ValidationResult {
                 "{} humanized min ms is greater than max ms",
                 rule.name
             ));
+        }
+    }
+
+    for rule in &profile.tablet_scanner_rules {
+        validate_id(&rule.id, "tablet scanner rule", &mut ids, &mut errors);
+        validate_key(
+            &rule.trigger_key,
+            &format!("{} scanner trigger", rule.name),
+            &mut errors,
+        );
+        reject_toggle_conflict(
+            &rule.trigger_key,
+            toggle_hotkey,
+            &format!("{} scanner trigger", rule.name),
+            &mut errors,
+        );
+        if rule.columns == 0 || rule.rows == 0 {
+            errors.push(format!("{} grid must have rows and columns", rule.name));
+        }
+        if rule.grid.width <= 0 || rule.grid.height <= 0 {
+            errors.push(format!("{} grid size must be positive", rule.name));
+        }
+        if rule.scan_delay_ms > 5_000 {
+            errors.push(format!("{} scan delay is too high", rule.name));
         }
     }
 

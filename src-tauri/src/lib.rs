@@ -7,6 +7,7 @@ mod profiles;
 mod recorder;
 mod runtime;
 mod screen;
+mod tablets;
 
 use runtime::RuntimeState;
 use tauri::Manager;
@@ -46,6 +47,9 @@ pub fn run() {
             commands::test_pixel_actions,
             commands::test_inventory_stash_rule,
             commands::capture_inventory_stash_snapshot,
+            commands::scan_tablet_stash,
+            commands::highlight_tablet_slot,
+            commands::move_tablet_to_inventory,
             commands::validate_key_sequence,
         ])
         .build(tauri::generate_context!())

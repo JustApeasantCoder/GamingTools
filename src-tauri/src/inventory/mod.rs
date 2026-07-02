@@ -45,7 +45,7 @@ pub fn send_occupied_slots(
             continue;
         }
 
-        if let Err(error) = input::left_click_at(
+        input::left_click_at(
             slot.center.x,
             slot.center.y,
             input::ClickTiming {
@@ -53,9 +53,7 @@ pub fn send_occupied_slots(
                 click_hold_ms: random_delay_ms(&rule.humanization),
                 click_release_settle_ms: random_delay_ms(&rule.humanization),
             },
-        ) {
-            return Err(error);
-        }
+        )?;
         sent += 1;
         wait_for_slot_to_clear(rule, slot.center, stop, guard_active);
         if !interruptible_inventory_sleep(random_delay_ms(&rule.humanization), stop, guard_active) {

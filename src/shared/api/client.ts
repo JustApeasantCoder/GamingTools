@@ -39,6 +39,49 @@ function previewResponse<T>(command: string, args?: Record<string, unknown>): Pr
     return Promise.resolve(snapshots as T)
   }
 
+  if (command === 'scan_tablet_stash') {
+    return Promise.resolve({
+      scannedSlots: 144,
+      skippedSlots: ['0:1', '1:1'],
+      tablets: [
+        {
+          slot: '2:3',
+          column: 2,
+          row: 3,
+          tabletType: 'Abyss Precursor Tablet',
+          rarity: 'Magic',
+          usesRemaining: 10,
+          valueTier: 'S',
+          valueScore: 144,
+          prefixes: [{ text: 'Map has 35% increased number of Rare Monsters', affixType: 'prefix', tier: 'A', score: 50 }],
+          suffixes: [{ text: '2 additional Rare Monsters are spawned from Abysses in Map', affixType: 'suffix', tier: 'S', score: 76 }],
+          unknownMods: [],
+          reasons: ['S-tier 2 additional Rare Monsters are spawned from Abysses in Map', 'Prefix and suffix both have value', '10 uses remaining'],
+          rawText: 'Abyss Precursor Tablet',
+        },
+        {
+          slot: '5:4',
+          column: 5,
+          row: 4,
+          tabletType: 'Ritual Precursor Tablet',
+          rarity: 'Magic',
+          usesRemaining: 10,
+          valueTier: 'A',
+          valueScore: 92,
+          prefixes: [],
+          suffixes: [{ text: 'Ritual Favours in Map have 65% increased chance to be Omens', affixType: 'suffix', tier: 'S', score: 74 }],
+          unknownMods: [],
+          reasons: ['S-tier Ritual Favours in Map have 65% increased chance to be Omens', 'Mechanic-specific suffix matches tablet type', '10 uses remaining'],
+          rawText: 'Ritual Precursor Tablet',
+        },
+      ],
+    } as T)
+  }
+
+  if (command === 'highlight_tablet_slot' || command === 'move_tablet_to_inventory') {
+    return Promise.resolve(undefined as T)
+  }
+
   if (command === 'validate_key_sequence') {
     return Promise.resolve({ valid: true, errors: [] } as T)
   }
