@@ -4,7 +4,9 @@ import {
   ChevronUp,
   Gamepad2,
   Keyboard,
+  Map as MapIcon,
   MousePointer2,
+  PackageOpen,
   Play,
   Settings,
   Square,
@@ -14,7 +16,7 @@ import {
 } from 'lucide-react'
 import './App.css'
 import { callBackend } from './shared/api/client'
-import type { AppProfile, MacroStep, PixelSampleRequest, ProfileStore, TabletCraftReport, TabletScanReport } from './shared/types/profile'
+import type { AppProfile, MacroStep, MapCraftReport, MapScanReport, PixelSampleRequest, ProfileStore, TabletCraftReport, TabletScanReport } from './shared/types/profile'
 import { MacroBuilder } from './features/macros/MacroBuilder'
 import { MacroInspector } from './features/macros/MacroInspector'
 import { getProfileTimingIssues } from './features/macros/macroTiming'
@@ -24,13 +26,15 @@ import { getPixelRuleIssues } from './features/pixel-trigger/pixelRuleValidation
 import { ToggleHold } from './features/toggle-hold/ToggleHold'
 import { getToggleHoldRuleIssues } from './features/toggle-hold/toggleHoldValidation'
 import { InventoryStash } from './features/inventory-stash/InventoryStash'
+import { StashInventory } from './features/stash-inventory/StashInventory'
 import { TabletScanner } from './features/tablet-scanner/TabletScanner'
+import { MapCrafter } from './features/map-crafter/MapCrafter'
 import { ProfileRail } from './features/profiles/ProfileRail'
 import { Button } from './shared/ui/Button'
 import { SettingsPanel } from './features/settings/SettingsPanel'
 import { ProfileSettings } from './features/profiles/ProfileSettings'
 
-type FeatureTab = 'macros' | 'pixels' | 'toggleHold' | 'inventoryStash' | 'tabletScanner' | 'profile' | 'settings'
+type FeatureTab = 'macros' | 'pixels' | 'toggleHold' | 'inventoryStash' | 'stashInventory' | 'tabletScanner' | 'mapCrafter' | 'profile' | 'settings'
 type RuntimeEventPayload = {
   kind: string
   message: string
@@ -56,6 +60,7 @@ const defaultStore: ProfileStore = {
           name: 'Farming Loop',
           enabled: true,
           triggerKey: 'F6',
+          repeatWhileHeld: false,
           steps: [
             { id: 'step-a', key: 'A', pressDuration: { enabled: true, minMs: 50, maxMs: 90 }, humanizedDelay: { enabled: true, minMs: 100, maxMs: 200 } },
             { id: 'step-b', key: 'B', pressDuration: { enabled: true, minMs: 60, maxMs: 100 }, humanizedDelay: { enabled: true, minMs: 150, maxMs: 250 } },
@@ -129,6 +134,20 @@ const defaultStore: ProfileStore = {
           humanization: { enabled: true, minMs: 120, maxMs: 240 },
         },
       ],
+      stashInventoryRules: [
+        {
+          id: 'stash-inventory-default',
+          name: 'Stash to inventory',
+          enabled: false,
+          triggerKey: 'F10',
+          columns: 12,
+          rows: 12,
+          grid: { x: 18, y: 126, width: 632, height: 632 },
+          emptyColor: '#17130f',
+          tolerance: 18,
+          humanization: { enabled: true, minMs: 120, maxMs: 240 },
+        },
+      ],
       tabletScannerRules: [
         {
           id: 'tablet-scanner-default',
@@ -139,6 +158,7 @@ const defaultStore: ProfileStore = {
           rows: 12,
           grid: { x: 18, y: 126, width: 632, height: 632 },
           scanDelayMs: 90,
+          emptyTolerance: 8,
           craft: {
             transmutation: { x: 0, y: 0 },
             augmentation: { x: 0, y: 0 },
@@ -149,6 +169,24 @@ const defaultStore: ProfileStore = {
             craftDelayMs: 90,
           },
           valueRules: [],
+        },
+      ],
+      mapCrafterRules: [
+        {
+          id: 'map-crafter-default',
+          name: 'Map crafter',
+          targetExecutable: '',
+          columns: 12,
+          rows: 6,
+          grid: { x: 18, y: 126, width: 632, height: 316 },
+          scanDelayMs: 90,
+          emptyTolerance: 8,
+          craft: {
+            alchemy: { x: 0, y: 0 },
+            exalted: { x: 0, y: 0 },
+            scouring: { x: 0, y: 0 },
+            craftDelayMs: 90,
+          },
         },
       ],
     },
@@ -201,7 +239,7 @@ function App() {
   const enabledToggleHoldIssues = toggleHoldRuleIssues.filter(({ rule }) => rule.enabled).flatMap(({ issues }) => issues)
   const invalidToggleHoldRuleCount = toggleHoldRuleIssues.filter(({ issues }) => issues.length > 0).length
   const enabledRuleCount = activeProfile
-    ? activeProfile.macroRules.filter((rule) => rule.enabled).length + activeProfile.pixelRules.filter((rule) => rule.enabled).length + activeProfile.toggleHoldRules.filter((rule) => rule.enabled).length + (activeProfile.inventoryStashRules ?? []).filter((rule) => rule.enabled).length
+    ? activeProfile.macroRules.filter((rule) => rule.enabled).length + activeProfile.pixelRules.filter((rule) => rule.enabled).length + activeProfile.toggleHoldRules.filter((rule) => rule.enabled).length + (activeProfile.inventoryStashRules ?? []).filter((rule) => rule.enabled).length + (activeProfile.stashInventoryRules ?? []).filter((rule) => rule.enabled).length
     : 0
   const startIssues = [...timingIssues.map((issue) => issue.message), ...pixelIssues, ...enabledToggleHoldIssues.map((issue) => issue.message)]
 
@@ -441,6 +479,12 @@ function App() {
     return snapshots
   }
 
+  const handleTestStashInventoryRule = async (rule: AppProfile['stashInventoryRules'][number]) => {
+    const count = await callBackend<number>('test_stash_inventory_rule', { rule })
+    addLog(`${rule.name} test: ${count} occupied stash slot${count === 1 ? '' : 's'} detected`)
+    return count
+  }
+
   const handleScanTabletStash = async (rule: AppProfile['tabletScannerRules'][number]) => {
     const report = await callBackend<TabletScanReport>('scan_tablet_stash', { rule })
     const valuableCount = report.tablets.filter((tablet) => tablet.valueTier !== 'Low').length
@@ -464,6 +508,18 @@ function App() {
     addLog(`${rule.name}: moved slot ${slot} to inventory`)
   }
 
+  const handleScanMapGrid = async (rule: AppProfile['mapCrafterRules'][number]) => {
+    const report = await callBackend<MapScanReport>('scan_map_grid', { rule })
+    addLog(`${rule.name} scan: ${report.maps.length} map${report.maps.length === 1 ? '' : 's'} found`)
+    return report
+  }
+
+  const handleCraftMaps = async (rule: AppProfile['mapCrafterRules'][number]) => {
+    const report = await callBackend<MapCraftReport>('craft_maps', { rule })
+    addLog(`${rule.name}: crafted ${report.craftedSlots.length} map${report.craftedSlots.length === 1 ? '' : 's'} with ${report.actions.length} currency action${report.actions.length === 1 ? '' : 's'}`)
+    return report
+  }
+
   const handleGetForegroundApp = async () => {
     return callBackend<{ executable: string; path: string }>('get_foreground_app')
   }
@@ -482,13 +538,16 @@ function App() {
           name: 'New Macro',
           enabled: true,
           triggerKey: 'F7',
+          repeatWhileHeld: false,
           steps: [{ id: crypto.randomUUID(), key: 'A', pressDuration: { enabled: true, minMs: 50, maxMs: 90 }, humanizedDelay: { enabled: true, minMs: 80, maxMs: 160 } }],
         },
       ],
       pixelRules: [],
       toggleHoldRules: [],
       inventoryStashRules: [],
+      stashInventoryRules: [],
       tabletScannerRules: [],
+      mapCrafterRules: [],
     }
     try {
       await callBackend('save_profile', { profile: newProfile })
@@ -554,8 +613,14 @@ function App() {
           <button className={activeTab === 'inventoryStash' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveTab('inventoryStash')}>
             <Warehouse size={18} /> Inventory Stash
           </button>
+          <button className={activeTab === 'stashInventory' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveTab('stashInventory')}>
+            <PackageOpen size={18} /> Stash Inventory
+          </button>
           <button className={activeTab === 'tabletScanner' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveTab('tabletScanner')}>
             <Tablet size={18} /> Tablet Scanner
+          </button>
+          <button className={activeTab === 'mapCrafter' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveTab('mapCrafter')}>
+            <MapIcon size={18} /> Map Crafter
           </button>
         </nav>
 
@@ -648,6 +713,14 @@ function App() {
                 onTestRule={handleTestInventoryStashRule}
                 onCaptureSnapshot={handleCaptureInventoryStashSnapshot}
               />
+            ) : activeTab === 'stashInventory' ? (
+              <StashInventory
+                profile={activeProfile}
+                onProfileChange={updateActiveProfile}
+                onPickPixel={handlePickPixel}
+                onSamplePixel={handleSamplePixel}
+                onTestRule={handleTestStashInventoryRule}
+              />
             ) : activeTab === 'tabletScanner' ? (
               <TabletScanner
                 profile={activeProfile}
@@ -656,6 +729,14 @@ function App() {
                 onScanAndCraft={handleScanAndCraftTablets}
                 onHighlightSlot={handleHighlightTabletSlot}
                 onMoveToInventory={handleMoveTabletToInventory}
+                onGetForegroundApp={handleGetForegroundApp}
+              />
+            ) : activeTab === 'mapCrafter' ? (
+              <MapCrafter
+                profile={activeProfile}
+                onProfileChange={updateActiveProfile}
+                onScan={handleScanMapGrid}
+                onCraft={handleCraftMaps}
                 onGetForegroundApp={handleGetForegroundApp}
               />
             ) : activeTab === 'profile' ? (
@@ -722,7 +803,9 @@ function App() {
                 <dt>Pixel triggers</dt><dd>{activeProfile.pixelRules.length}</dd>
                 <dt>Toggle Hold</dt><dd>{activeProfile.toggleHoldRules.length}</dd>
                 <dt>Inventory stash</dt><dd>{activeProfile.inventoryStashRules?.length ?? 0}</dd>
+                <dt>Stash inventory</dt><dd>{activeProfile.stashInventoryRules?.length ?? 0}</dd>
                 <dt>Tablet scanner</dt><dd>{activeProfile.tabletScannerRules?.length ?? 0}</dd>
+                <dt>Map crafter</dt><dd>{activeProfile.mapCrafterRules?.length ?? 0}</dd>
                 <dt>Automation</dt><dd>{isRunning ? 'Running' : 'Stopped'}</dd>
               </dl>
             ) : null}
@@ -760,7 +843,9 @@ function duplicateProfileWithNewIds(profile: AppProfile, profiles: AppProfile[])
     })),
     toggleHoldRules: profile.toggleHoldRules.map((rule) => ({ ...rule, id: crypto.randomUUID() })),
     inventoryStashRules: (profile.inventoryStashRules ?? []).map((rule) => ({ ...rule, id: crypto.randomUUID() })),
+    stashInventoryRules: (profile.stashInventoryRules ?? []).map((rule) => ({ ...rule, id: crypto.randomUUID() })),
     tabletScannerRules: (profile.tabletScannerRules ?? []).map((rule) => ({ ...rule, id: crypto.randomUUID() })),
+    mapCrafterRules: (profile.mapCrafterRules ?? []).map((rule) => ({ ...rule, id: crypto.randomUUID() })),
   }
 }
 

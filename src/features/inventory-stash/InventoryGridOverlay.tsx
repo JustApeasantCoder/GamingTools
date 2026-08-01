@@ -3,12 +3,12 @@ import type React from 'react'
 import { emitTo, listen } from '@tauri-apps/api/event'
 import { PhysicalPosition, PhysicalSize, getCurrentWindow } from '@tauri-apps/api/window'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
-import type { InventoryStashRule, TabletScannerRule } from '../../shared/types/profile'
+import type { InventoryStashRule, MapCrafterRule, StashInventoryRule, TabletScannerRule } from '../../shared/types/profile'
 import '../../App.css'
 
 type DragMode = 'move' | 'resize' | undefined
-type OverlayView = 'inventory-overlay' | 'tablet-scanner-overlay'
-type OverlayRule = InventoryStashRule | TabletScannerRule
+type OverlayView = 'inventory-overlay' | 'stash-inventory-overlay' | 'tablet-scanner-overlay' | 'map-crafter-overlay'
+type OverlayRule = InventoryStashRule | StashInventoryRule | TabletScannerRule | MapCrafterRule
 
 export function InventoryGridOverlay() {
   const view = overlayViewFromUrl()
@@ -25,6 +25,8 @@ export function InventoryGridOverlay() {
     if (!hasTauriRuntime()) return
     const appWindow = getCurrentWindow()
     const webviewWindow = getCurrentWebviewWindow()
+    let cancelled = false
+    let publishTimer: ReturnType<typeof setTimeout> | undefined
     void webviewWindow.setBackgroundColor([0, 0, 0, 0])
     void appWindow.setAlwaysOnTop(true)
     void appWindow.setDecorations(false)
@@ -35,25 +37,35 @@ export function InventoryGridOverlay() {
     let unlistenConfig: (() => void) | undefined
     let unlistenMoved: (() => void) | undefined
     let unlistenResized: (() => void) | undefined
+    const scheduleGridPublish = () => {
+      if (publishTimer) clearTimeout(publishTimer)
+      publishTimer = setTimeout(() => {
+        publishTimer = undefined
+        void publishActualGrid(appWindow, ruleRef)
+      }, 150)
+    }
+
     void listen<OverlayRule>(events.config, (event) => {
+      ruleRef.current = event.payload
       setRule(event.payload)
       void syncWindowToPhysicalGrid(appWindow, event.payload.grid).then(() => publishActualGrid(appWindow, ruleRef))
     }).then((dispose) => {
-      unlistenConfig = dispose
+      if (cancelled) dispose()
+      else unlistenConfig = dispose
     })
-    void appWindow.onMoved(() => {
-      void publishActualGrid(appWindow, ruleRef)
-    }).then((dispose) => {
-      unlistenMoved = dispose
+    void appWindow.onMoved(scheduleGridPublish).then((dispose) => {
+      if (cancelled) dispose()
+      else unlistenMoved = dispose
     })
-    void appWindow.onResized(() => {
-      void publishActualGrid(appWindow, ruleRef)
-    }).then((dispose) => {
-      unlistenResized = dispose
+    void appWindow.onResized(scheduleGridPublish).then((dispose) => {
+      if (cancelled) dispose()
+      else unlistenResized = dispose
     })
     void emitTo('main', events.ready)
 
     return () => {
+      cancelled = true
+      if (publishTimer) clearTimeout(publishTimer)
       unlistenConfig?.()
       unlistenMoved?.()
       unlistenResized?.()
@@ -79,14 +91,14 @@ export function InventoryGridOverlay() {
   return (
     <main className="inventory-screen-overlay">
       <section
-        className={view === 'tablet-scanner-overlay' ? 'inventory-screen-grid tablet-screen-grid' : 'inventory-screen-grid'}
+        className={view === 'tablet-scanner-overlay' || view === 'map-crafter-overlay' ? 'inventory-screen-grid tablet-screen-grid' : 'inventory-screen-grid'}
         style={{
           gridTemplateColumns: `repeat(${rule.columns}, 1fr)`,
           gridTemplateRows: `repeat(${rule.rows}, 1fr)`,
         }}
         onPointerDown={(event) => beginDrag(event, 'move')}
       >
-        <div className="inventory-screen-drag-label">{view === 'tablet-scanner-overlay' ? 'Drag stash grid' : 'Drag grid'}</div>
+        <div className="inventory-screen-drag-label">{view === 'inventory-overlay' ? 'Drag inventory grid' : 'Drag stash grid'}</div>
         {slots.map((slot) => <span key={slot} />)}
         <button className="inventory-screen-close" aria-label="Close inventory grid overlay" onPointerDown={(event) => event.stopPropagation()} onClick={() => void closeOverlay()} />
         <button className="inventory-screen-resize" aria-label="Resize inventory grid" onPointerDown={(event) => { event.stopPropagation(); beginDrag(event, 'resize') }} />
@@ -100,13 +112,13 @@ function hasTauriRuntime() {
 }
 
 function previewRule(view: OverlayView): OverlayRule {
-  const grid = view === 'tablet-scanner-overlay'
-    ? { x: 18, y: 126, width: 632, height: 632 }
-    : { x: 34, y: 37, width: 844, height: 352 }
+  const grid = view === 'inventory-overlay'
+    ? { x: 34, y: 37, width: 844, height: 352 }
+    : { x: 18, y: 126, width: 632, height: 632 }
   const base = {
     id: 'inventory-stash-preview',
     columns: 12,
-    rows: view === 'tablet-scanner-overlay' ? 12 : 5,
+    rows: view === 'inventory-overlay' ? 5 : 12,
     grid,
   }
   if (view === 'tablet-scanner-overlay') {
@@ -117,6 +129,7 @@ function previewRule(view: OverlayView): OverlayRule {
       triggerKey: 'F9',
       targetExecutable: '',
       scanDelayMs: 90,
+      emptyTolerance: 8,
       craft: {
         transmutation: { x: 0, y: 0 },
         augmentation: { x: 0, y: 0 },
@@ -127,6 +140,36 @@ function previewRule(view: OverlayView): OverlayRule {
         craftDelayMs: 90,
       },
       valueRules: [],
+    }
+  }
+  if (view === 'map-crafter-overlay') {
+    return {
+      ...base,
+      id: 'map-crafter-preview',
+      name: 'Map crafter',
+      rows: 6,
+      grid: { x: 18, y: 126, width: 632, height: 316 },
+      targetExecutable: '',
+      scanDelayMs: 90,
+      emptyTolerance: 8,
+      craft: {
+        alchemy: { x: 0, y: 0 },
+        exalted: { x: 0, y: 0 },
+        scouring: { x: 0, y: 0 },
+        craftDelayMs: 90,
+      },
+    }
+  }
+  if (view === 'stash-inventory-overlay') {
+    return {
+      ...base,
+      id: 'stash-inventory-preview',
+      name: 'Stash to inventory',
+      enabled: false,
+      triggerKey: 'F10',
+      emptyColor: '#17130f',
+      tolerance: 18,
+      humanization: { enabled: true, minMs: 120, maxMs: 240 },
     }
   }
   return {
@@ -159,7 +202,10 @@ function createSlots(columns: number, rows: number) {
 
 function overlayViewFromUrl(): OverlayView {
   const view = new URLSearchParams(window.location.search).get('view')
-  return view === 'tablet-scanner-overlay' ? 'tablet-scanner-overlay' : 'inventory-overlay'
+  if (view === 'map-crafter-overlay') return 'map-crafter-overlay'
+  if (view === 'tablet-scanner-overlay') return 'tablet-scanner-overlay'
+  if (view === 'stash-inventory-overlay') return 'stash-inventory-overlay'
+  return 'inventory-overlay'
 }
 
 function ruleFromUrl(view: OverlayView): OverlayRule | undefined {
@@ -192,19 +238,36 @@ async function closeOverlay() {
 }
 
 function overlayEvents(view: OverlayView) {
-  return view === 'tablet-scanner-overlay'
-    ? {
-        config: 'tablet-scanner-overlay-config',
-        ready: 'tablet-scanner-overlay-ready',
-        closed: 'tablet-scanner-overlay-closed',
-        gridChange: 'tablet-scanner-overlay-grid-change',
-      }
-    : {
-        config: 'inventory-overlay-config',
-        ready: 'inventory-overlay-ready',
-        closed: 'inventory-overlay-closed',
-        gridChange: 'inventory-overlay-grid-change',
-      }
+  if (view === 'map-crafter-overlay') {
+    return {
+      config: 'map-crafter-overlay-config',
+      ready: 'map-crafter-overlay-ready',
+      closed: 'map-crafter-overlay-closed',
+      gridChange: 'map-crafter-overlay-grid-change',
+    }
+  }
+  if (view === 'tablet-scanner-overlay') {
+    return {
+      config: 'tablet-scanner-overlay-config',
+      ready: 'tablet-scanner-overlay-ready',
+      closed: 'tablet-scanner-overlay-closed',
+      gridChange: 'tablet-scanner-overlay-grid-change',
+    }
+  }
+  if (view === 'stash-inventory-overlay') {
+    return {
+      config: 'stash-inventory-overlay-config',
+      ready: 'stash-inventory-overlay-ready',
+      closed: 'stash-inventory-overlay-closed',
+      gridChange: 'stash-inventory-overlay-grid-change',
+    }
+  }
+  return {
+    config: 'inventory-overlay-config',
+    ready: 'inventory-overlay-ready',
+    closed: 'inventory-overlay-closed',
+    gridChange: 'inventory-overlay-grid-change',
+  }
 }
 
 async function syncWindowToPhysicalGrid(appWindow: ReturnType<typeof getCurrentWindow>, grid: OverlayRule['grid']) {
@@ -228,6 +291,14 @@ async function publishActualGrid(
     width: Math.max(120, Math.round(size.width)),
     height: Math.max(80, Math.round(size.height)),
   }
+  if (gridsEqual(currentRule.grid, grid)) return
   ruleRef.current = { ...currentRule, grid }
   await emitTo('main', overlayEvents(overlayViewFromUrl()).gridChange, grid)
+}
+
+function gridsEqual(left: OverlayRule['grid'], right: OverlayRule['grid']) {
+  return left.x === right.x
+    && left.y === right.y
+    && left.width === right.width
+    && left.height === right.height
 }

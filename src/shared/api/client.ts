@@ -119,6 +119,46 @@ async function previewResponse<T>(command: string, args?: Record<string, unknown
     return Promise.resolve(undefined as T)
   }
 
+  if (command === 'scan_map_grid') {
+    return Promise.resolve({
+      scannedSlots: 72,
+      skippedSlots: Array.from({ length: 68 }, (_, index) => {
+        const slot = index + 4
+        return `${slot % 12}:${Math.floor(slot / 12)}`
+      }),
+      maps: [
+        { slot: '0:0', column: 0, row: 0, itemType: 'Waystone (Tier 16)', rarity: 'Normal', rawText: 'Item Class: Waystones' },
+        { slot: '1:0', column: 1, row: 0, itemType: 'Waystone (Tier 16)', rarity: 'Magic', rawText: 'Item Class: Waystones' },
+        { slot: '2:0', column: 2, row: 0, itemType: 'Waystone (Tier 16)', rarity: 'Rare', rawText: 'Item Class: Waystones' },
+        { slot: '3:0', column: 3, row: 0, itemType: 'Unique Map', rarity: 'Unique', rawText: 'Item Class: Maps' },
+      ],
+    } as T)
+  }
+
+  if (command === 'craft_maps') {
+    const scan = await previewResponse<Record<string, unknown>>('scan_map_grid', args)
+    return Promise.resolve({
+      initialScan: scan,
+      craftedSlots: ['0:0', '1:0', '2:0'],
+      skippedSlots: ['3:0'],
+      actions: [
+        { slot: '1:0', currency: 'scouring', reason: 'magic map reset to normal rarity' },
+        { slot: '0:0', currency: 'alchemy', reason: 'first map crafting step' },
+        { slot: '1:0', currency: 'alchemy', reason: 'first map crafting step' },
+        { slot: '0:0', currency: 'exalted', reason: 'first Exalted application' },
+        { slot: '0:0', currency: 'exalted', reason: 'second Exalted application' },
+        { slot: '1:0', currency: 'exalted', reason: 'first Exalted application' },
+        { slot: '1:0', currency: 'exalted', reason: 'second Exalted application' },
+        { slot: '2:0', currency: 'exalted', reason: 'first Exalted application' },
+        { slot: '2:0', currency: 'exalted', reason: 'second Exalted application' },
+      ],
+    } as T)
+  }
+
+  if (command === 'capture_map_currency_location') {
+    return Promise.resolve({ x: 720, y: 480 } as T)
+  }
+
   if (command === 'validate_key_sequence') {
     return Promise.resolve({ valid: true, errors: [] } as T)
   }

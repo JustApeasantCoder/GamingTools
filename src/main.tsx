@@ -5,7 +5,10 @@ import App from './App.tsx'
 import { InventoryGridOverlay } from './features/inventory-stash/InventoryGridOverlay.tsx'
 
 const overlayView = new URLSearchParams(window.location.search).get('view')
-const isInventoryOverlay = overlayView === 'inventory-overlay' || overlayView === 'tablet-scanner-overlay'
+const isInventoryOverlay = overlayView === 'inventory-overlay'
+  || overlayView === 'stash-inventory-overlay'
+  || overlayView === 'tablet-scanner-overlay'
+  || overlayView === 'map-crafter-overlay'
 if (isInventoryOverlay) {
   document.documentElement.classList.add('inventory-overlay-root')
 }

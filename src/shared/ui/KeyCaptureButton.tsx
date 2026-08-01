@@ -8,18 +8,31 @@ interface KeyCaptureButtonProps {
   onChange: (value: string) => void
   label?: string
   className?: string
+  allowWheel?: boolean
 }
 
-export function KeyCaptureButton({ value, onChange, label = 'Change', className }: KeyCaptureButtonProps) {
+export function KeyCaptureButton({
+  value,
+  onChange,
+  label = 'Change',
+  className,
+  allowWheel = false,
+}: KeyCaptureButtonProps) {
   const [listening, setListening] = useState(false)
   const [captureError, setCaptureError] = useState(false)
 
   useEffect(() => {
     if (!listening) return
+    let finished = false
 
     const finish = async (nextValue: string) => {
+      if (finished) return
+      finished = true
       setListening(false)
-      const result = await callBackend<{ valid: boolean }>('validate_key_sequence', { sequence: [nextValue] })
+      const result = await callBackend<{ valid: boolean }>('validate_key_sequence', {
+        sequence: [nextValue],
+        allowScroll: allowWheel,
+      })
         .catch(() => ({ valid: false }))
       if (result.valid) {
         onChange(nextValue)
@@ -39,25 +52,35 @@ export function KeyCaptureButton({ value, onChange, label = 'Change', className 
       void finish(normalizeMouseButton(event.button))
     }
 
+    const onWheel = (event: WheelEvent) => {
+      if (!allowWheel || event.deltaY === 0) return
+      event.preventDefault()
+      void finish(event.deltaY < 0 ? 'SCROLL UP' : 'SCROLL DOWN')
+    }
+
     const onContextMenu = (event: MouseEvent) => {
       event.preventDefault()
     }
 
     window.addEventListener('keydown', onKeyDown, true)
     window.addEventListener('mousedown', onMouseDown, true)
+    window.addEventListener('wheel', onWheel, { capture: true, passive: false })
     window.addEventListener('contextmenu', onContextMenu, true)
 
     return () => {
       window.removeEventListener('keydown', onKeyDown, true)
       window.removeEventListener('mousedown', onMouseDown, true)
+      window.removeEventListener('wheel', onWheel, true)
       window.removeEventListener('contextmenu', onContextMenu, true)
     }
-  }, [listening, onChange])
+  }, [allowWheel, listening, onChange])
 
   return (
     <Button className={`key-capture-button${className ? ` ${className}` : ''}`} icon={Keyboard} onClick={() => setListening(true)}>
       {listening ? (
-        <span className="key-capture-value">Press a key or mouse button...</span>
+        <span className="key-capture-value">
+          {allowWheel ? 'Press a key, mouse button, or scroll...' : 'Press a key or mouse button...'}
+        </span>
       ) : captureError ? (
         <span className="key-capture-value key-capture-error">Input not supported</span>
       ) : (

@@ -1,8 +1,18 @@
 #[cfg(windows)]
 mod windows_input {
-    use std::{mem::size_of, thread, time::Duration};
+    use std::{
+        mem::size_of,
+        sync::{
+            atomic::{AtomicU64, Ordering},
+            mpsc::sync_channel,
+            OnceLock,
+        },
+        thread,
+        time::Duration,
+    };
     use windows_sys::Win32::{
         Foundation::POINT,
+        System::LibraryLoader::GetModuleHandleW,
         UI::{
             Input::KeyboardAndMouse::{
                 SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT,
@@ -12,12 +22,19 @@ mod windows_input {
                 MOUSEINPUT, VK_ESCAPE, VK_LBUTTON, VK_LCONTROL, VK_MBUTTON, VK_MENU, VK_RBUTTON,
                 VK_RCONTROL, VK_RETURN, VK_SHIFT, VK_SPACE, VK_TAB, VK_XBUTTON1, VK_XBUTTON2,
             },
-            WindowsAndMessaging::{GetCursorPos, SetCursorPos},
+            WindowsAndMessaging::{
+                CallNextHookEx, DispatchMessageW, GetCursorPos, GetMessageW, SetCursorPos,
+                SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, HC_ACTION,
+                LLMHF_INJECTED, MSG, MSLLHOOKSTRUCT, WH_MOUSE_LL, WM_MOUSEWHEEL,
+            },
         },
     };
 
     const XBUTTON1_MOUSE_DATA: u32 = 0x0001;
     const XBUTTON2_MOUSE_DATA: u32 = 0x0002;
+    static WHEEL_MONITOR: OnceLock<Result<(), String>> = OnceLock::new();
+    static WHEEL_UP_EVENTS: AtomicU64 = AtomicU64::new(0);
+    static WHEEL_DOWN_EVENTS: AtomicU64 = AtomicU64::new(0);
 
     #[derive(Clone, Copy, Debug)]
     pub struct ClickTiming {
@@ -37,6 +54,28 @@ mod windows_input {
         false
     }
 
+    pub fn start_wheel_monitor() -> Result<(), String> {
+        WHEEL_MONITOR
+            .get_or_init(|| {
+                let (ready_tx, ready_rx) = sync_channel(1);
+                thread::Builder::new()
+                    .name("mouse-wheel-monitor".into())
+                    .spawn(move || wheel_message_loop(ready_tx))
+                    .map_err(|error| format!("Unable to start mouse wheel monitor: {error}"))?;
+                ready_rx
+                    .recv_timeout(Duration::from_secs(2))
+                    .map_err(|_| "Mouse wheel monitor did not start in time".to_string())?
+            })
+            .clone()
+    }
+
+    pub fn wheel_event_counts() -> (u64, u64) {
+        (
+            WHEEL_UP_EVENTS.load(Ordering::Relaxed),
+            WHEEL_DOWN_EVENTS.load(Ordering::Relaxed),
+        )
+    }
+
     pub fn key_down(key: &str) -> Result<(), String> {
         send_down(key)
     }
@@ -47,6 +86,25 @@ mod windows_input {
 
     pub fn supports_key(key: &str) -> bool {
         virtual_key_code(key).is_some()
+    }
+
+    pub fn supports_action(action: &str) -> bool {
+        supports_key(action) || is_scroll_action(action)
+    }
+
+    pub fn is_scroll_action(action: &str) -> bool {
+        matches!(
+            action.trim().to_uppercase().as_str(),
+            "SCROLL UP" | "SCROLL DOWN"
+        )
+    }
+
+    pub fn perform_scroll_action(action: &str) -> Result<(), String> {
+        match action.trim().to_uppercase().as_str() {
+            "SCROLL UP" => mouse_wheel(120),
+            "SCROLL DOWN" => mouse_wheel(-120),
+            _ => Err(format!("Unsupported scroll action: {action}")),
+        }
     }
 
     pub fn supported_key_names() -> Vec<String> {
@@ -190,6 +248,40 @@ mod windows_input {
         }
     }
 
+    fn wheel_message_loop(ready: std::sync::mpsc::SyncSender<Result<(), String>>) {
+        unsafe {
+            let module = GetModuleHandleW(std::ptr::null());
+            let hook = SetWindowsHookExW(WH_MOUSE_LL, Some(wheel_hook), module, 0);
+            if hook.is_null() {
+                let _ = ready.send(Err("Unable to install mouse wheel monitor".into()));
+                return;
+            }
+            let _ = ready.send(Ok(()));
+
+            let mut message: MSG = std::mem::zeroed();
+            while GetMessageW(&mut message, std::ptr::null_mut(), 0, 0) > 0 {
+                TranslateMessage(&message);
+                DispatchMessageW(&message);
+            }
+            UnhookWindowsHookEx(hook);
+        }
+    }
+
+    unsafe extern "system" fn wheel_hook(code: i32, wparam: usize, lparam: isize) -> isize {
+        if code == HC_ACTION as i32 && wparam as u32 == WM_MOUSEWHEEL {
+            let event = &*(lparam as *const MSLLHOOKSTRUCT);
+            if event.flags & LLMHF_INJECTED == 0 {
+                let delta = (event.mouseData >> 16) as u16 as i16;
+                if delta > 0 {
+                    WHEEL_UP_EVENTS.fetch_add(1, Ordering::Relaxed);
+                } else if delta < 0 {
+                    WHEEL_DOWN_EVENTS.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }
+        CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam)
+    }
+
     enum InputCode {
         Keyboard {
             vk: u16,
@@ -301,6 +393,14 @@ mod windows_input {
         false
     }
 
+    pub fn start_wheel_monitor() -> Result<(), String> {
+        Ok(())
+    }
+
+    pub fn wheel_event_counts() -> (u64, u64) {
+        (0, 0)
+    }
+
     pub fn key_down(_key: &str) -> Result<(), String> {
         Err("Input simulation is only supported on Windows".into())
     }
@@ -311,6 +411,21 @@ mod windows_input {
 
     pub fn supports_key(_key: &str) -> bool {
         false
+    }
+
+    pub fn supports_action(_action: &str) -> bool {
+        false
+    }
+
+    pub fn is_scroll_action(action: &str) -> bool {
+        matches!(
+            action.trim().to_uppercase().as_str(),
+            "SCROLL UP" | "SCROLL DOWN"
+        )
+    }
+
+    pub fn perform_scroll_action(_action: &str) -> Result<(), String> {
+        Err("Mouse automation is only supported on Windows".into())
     }
 
     pub fn supported_key_names() -> Vec<String> {
@@ -355,5 +470,8 @@ mod tests {
         assert!(supports_key("MOUSE 5"));
         assert!(supports_key("XBUTTON1"));
         assert!(supports_key("XBUTTON2"));
+        assert!(supports_action("SCROLL UP"));
+        assert!(supports_action("scroll down"));
+        assert!(!supports_key("SCROLL UP"));
     }
 }

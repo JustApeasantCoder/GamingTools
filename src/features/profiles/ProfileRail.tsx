@@ -38,8 +38,8 @@ export function ProfileRail({
         </button>
         <button
           className={isConfiguring ? 'profile-tool-button active' : 'profile-tool-button'}
-          aria-label="Configure active profile"
-          title="Configure active profile"
+          aria-label="Configure or rename active profile"
+          title="Configure or rename active profile"
           onClick={onConfigure}
         >
           <SlidersHorizontal size={16} />

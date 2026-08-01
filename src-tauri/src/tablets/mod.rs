@@ -8,7 +8,6 @@ use crate::{
 };
 
 const EMPTY_TABLET_SLOT_COLOR: &str = "#000000";
-const EMPTY_TABLET_SLOT_TOLERANCE: u8 = 8;
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -93,11 +92,20 @@ pub fn scan_stash(rule: &TabletScannerRule) -> Result<TabletScanReport, String> 
     foreground::focus_executable(&rule.target_executable)?;
     thread::sleep(delay);
 
+    let (parking_x, parking_y) = tooltip_parking_point(rule);
+    input::move_cursor_to(parking_x, parking_y)?;
+    thread::sleep(tooltip_dismiss_delay(rule));
+
+    let mut occupied_slots = Vec::with_capacity(slots.len());
     for slot in &slots {
-        if slot_looks_empty(slot) {
+        if slot_looks_empty(slot, rule.empty_tolerance) {
             skipped_slots.push(slot_id(slot.column, slot.row));
-            continue;
+        } else {
+            occupied_slots.push(*slot);
         }
+    }
+
+    for slot in &occupied_slots {
         input::move_cursor_to(slot.x, slot.y)?;
         thread::sleep(delay);
         clipboard::clear_clipboard()?;
@@ -334,12 +342,26 @@ fn parse_tablet_text_with_rules(
     })
 }
 
-fn slot_looks_empty(slot: &ScannerSlot) -> bool {
+fn tooltip_parking_point(rule: &TabletScannerRule) -> (i32, i32) {
+    (
+        rule.grid.x.saturating_add(rule.grid.width / 2),
+        rule.grid
+            .y
+            .saturating_add(rule.grid.height)
+            .saturating_add(16),
+    )
+}
+
+fn tooltip_dismiss_delay(rule: &TabletScannerRule) -> Duration {
+    Duration::from_millis(rule.scan_delay_ms.clamp(120, 1_000))
+}
+
+fn slot_looks_empty(slot: &ScannerSlot, tolerance: u8) -> bool {
     match screen::sample_pixel(PixelPoint {
         x: slot.x,
         y: slot.y,
     }) {
-        Ok(sample) => is_empty_slot_color(&sample.color),
+        Ok(sample) => is_empty_slot_color(&sample.color, tolerance),
         Err(error) => {
             log::warn!(
                 "Tablet scanner could not sample slot {}: {error}",
@@ -350,8 +372,8 @@ fn slot_looks_empty(slot: &ScannerSlot) -> bool {
     }
 }
 
-fn is_empty_slot_color(color: &str) -> bool {
-    screen::color_matches(color, EMPTY_TABLET_SLOT_COLOR, EMPTY_TABLET_SLOT_TOLERANCE)
+fn is_empty_slot_color(color: &str, tolerance: u8) -> bool {
+    screen::color_matches(color, EMPTY_TABLET_SLOT_COLOR, tolerance)
 }
 
 fn scanner_slots(rule: &TabletScannerRule) -> Result<Vec<ScannerSlot>, String> {
@@ -1530,9 +1552,10 @@ Can be used in a personal Map Device
 
     #[test]
     fn black_slot_center_counts_as_empty() {
-        assert!(is_empty_slot_color("#000000"));
-        assert!(is_empty_slot_color("#070606"));
-        assert!(!is_empty_slot_color("#151923"));
+        assert!(is_empty_slot_color("#000000", 8));
+        assert!(is_empty_slot_color("#070606", 8));
+        assert!(!is_empty_slot_color("#151923", 8));
+        assert!(is_empty_slot_color("#151923", 35));
     }
 
     #[test]

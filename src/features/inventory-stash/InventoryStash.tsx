@@ -29,41 +29,48 @@ export function InventoryStash({ profile, onProfileChange, onPickPixel, onSample
   const updateRule = useCallback((nextRule: InventoryStashRule) => {
     onProfileChange({ ...profile, inventoryStashRules: [nextRule] })
   }, [onProfileChange, profile])
+  const updateRuleRef = useRef(updateRule)
 
   useEffect(() => {
     ruleRef.current = rule
-  }, [rule])
+    updateRuleRef.current = updateRule
+  }, [rule, updateRule])
 
   useEffect(() => {
+    let cancelled = false
     let unlistenGrid: (() => void) | undefined
     let unlistenReady: (() => void) | undefined
     let unlistenClosed: (() => void) | undefined
 
     void listen<InventoryStashRule['grid']>('inventory-overlay-grid-change', (event) => {
-      updateRule({ ...ruleRef.current, grid: event.payload })
+      updateRuleRef.current({ ...ruleRef.current, grid: event.payload })
     }).then((dispose) => {
-      unlistenGrid = dispose
+      if (cancelled) dispose()
+      else unlistenGrid = dispose
     })
 
     void listen('inventory-overlay-ready', () => {
       setOverlayOpen(true)
       void emitTo('inventory-overlay', 'inventory-overlay-config', ruleRef.current)
     }).then((dispose) => {
-      unlistenReady = dispose
+      if (cancelled) dispose()
+      else unlistenReady = dispose
     })
 
     void listen('inventory-overlay-closed', () => {
       setOverlayOpen(false)
     }).then((dispose) => {
-      unlistenClosed = dispose
+      if (cancelled) dispose()
+      else unlistenClosed = dispose
     })
 
     return () => {
+      cancelled = true
       unlistenGrid?.()
       unlistenReady?.()
       unlistenClosed?.()
     }
-  }, [updateRule])
+  }, [])
 
   const toggleIgnoredSlot = (slotId: string) => {
     const isIgnored = rule.ignoredSlots.includes(slotId)
@@ -223,6 +230,8 @@ export function InventoryStash({ profile, onProfileChange, onPickPixel, onSample
               {overlayError ? <div className="notice notice-error">{overlayError}</div> : null}
             </div>
             <div className="inventory-grid-fields">
+              <label>Columns<input type="number" min={1} max={64} value={rule.columns} onChange={(event) => updateRule({ ...rule, columns: gridCount(event.target.value), snapshotColors: [] })} /></label>
+              <label>Rows<input type="number" min={1} max={64} value={rule.rows} onChange={(event) => updateRule({ ...rule, rows: gridCount(event.target.value), snapshotColors: [] })} /></label>
               <label>X<input type="number" value={rule.grid.x} onChange={(event) => updateRule({ ...rule, grid: { ...rule.grid, x: Number(event.target.value) } })} /></label>
               <label>Y<input type="number" value={rule.grid.y} onChange={(event) => updateRule({ ...rule, grid: { ...rule.grid, y: Number(event.target.value) } })} /></label>
               <label>Width<input type="number" min={120} value={rule.grid.width} onChange={(event) => updateRule({ ...rule, grid: { ...rule.grid, width: Number(event.target.value) } })} /></label>
@@ -338,6 +347,10 @@ function createSlots(columns: number, rows: number) {
     }
   }
   return slots
+}
+
+function gridCount(value: string) {
+  return Math.min(64, Math.max(1, Math.floor(Number(value) || 1)))
 }
 
 function testLabel(state: 'idle' | 'testing' | 'ready' | 'error', count?: number) {

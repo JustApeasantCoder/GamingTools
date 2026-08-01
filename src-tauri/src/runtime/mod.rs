@@ -16,10 +16,10 @@ use crate::{
     foreground, input, inventory,
     macros::{random_delay_ms, validate_profile},
     profiles::{
-        InventorySlotSnapshot, InventoryStashRule, MacroStep, PixelCondition, PixelRule, Profile,
-        ToggleHoldRule,
+        InventorySlotSnapshot, InventoryStashRule, MacroRule, MacroStep, PixelCondition, PixelRule,
+        Profile, StashInventoryRule, ToggleHoldRule,
     },
-    screen,
+    screen, stash_inventory,
     tablets::TabletScanReport,
 };
 
@@ -196,6 +196,12 @@ fn stop_handle(handle: Option<RuntimeHandle>) -> Option<bool> {
 #[derive(Clone, Default)]
 struct InputOwners {
     counts: Arc<Mutex<HashMap<String, usize>>>,
+}
+
+#[derive(Clone, Default)]
+struct MacroWorkerState {
+    trigger_active: Arc<AtomicBool>,
+    worker_running: Arc<AtomicBool>,
 }
 
 impl InputOwners {
@@ -416,18 +422,22 @@ fn input_detection_loop(
 ) {
     let mut worker_threads = Vec::new();
     let mut macro_workers = HashMap::new();
+    let mut macro_trigger_states = HashMap::new();
     let mut inventory_workers = HashMap::new();
     let mut inventory_snapshot_workers = HashMap::new();
+    let mut stash_inventory_workers = HashMap::new();
 
     for rule in profile.macro_rules.iter().filter(|rule| rule.enabled) {
         let (sender, receiver) = sync_channel(1);
+        let worker_state = MacroWorkerState::default();
         macro_workers.insert(rule.id.clone(), sender);
-        worker_threads.push(spawn_action_worker(
+        macro_trigger_states.insert(rule.id.clone(), worker_state.clone());
+        worker_threads.push(spawn_macro_worker(
             app.clone(),
             Arc::clone(&stop),
             Arc::clone(&guard_active),
-            rule.name.clone(),
-            rule.steps.clone(),
+            rule.clone(),
+            worker_state,
             receiver,
             inputs.clone(),
         ));
@@ -450,17 +460,36 @@ fn input_detection_loop(
             snapshot_receiver,
         ));
     }
+    for rule in profile
+        .stash_inventory_rules
+        .iter()
+        .filter(|rule| rule.enabled)
+    {
+        let (sender, receiver) = sync_channel(1);
+        stash_inventory_workers.insert(rule.id.clone(), sender);
+        worker_threads.push(spawn_stash_inventory_worker(
+            app.clone(),
+            Arc::clone(&stop),
+            Arc::clone(&guard_active),
+            rule.clone(),
+            receiver,
+        ));
+    }
 
     let mut pressed_triggers = HashSet::new();
     let mut toggle_waiting_for_release: HashSet<String> = HashSet::new();
     let mut toggle_held_rules: HashSet<String> = HashSet::new();
     let supported_inputs = auto_release_input_names(&profile);
     let mut pressed_inputs = currently_pressed_inputs(&supported_inputs);
+    let mut previous_wheel_events = input::wheel_event_counts();
     let poll_interval = Duration::from_millis(8);
     let mut next_poll = Instant::now();
 
     while !stop.load(Ordering::Relaxed) {
         if !guard_active.load(Ordering::Relaxed) {
+            for worker_state in macro_trigger_states.values() {
+                worker_state.trigger_active.store(false, Ordering::Relaxed);
+            }
             for rule in profile
                 .toggle_hold_rules
                 .iter()
@@ -472,6 +501,7 @@ fn input_detection_loop(
             pressed_triggers.clear();
             toggle_waiting_for_release.clear();
             pressed_inputs = currently_pressed_inputs(&supported_inputs);
+            previous_wheel_events = input::wheel_event_counts();
             thread::sleep(Duration::from_millis(20));
             continue;
         }
@@ -505,12 +535,38 @@ fn input_detection_loop(
                 }
             }
         }
+        let current_wheel_events = input::wheel_event_counts();
+        let wheel_up_triggered = current_wheel_events.0 != previous_wheel_events.0;
+        let wheel_down_triggered = current_wheel_events.1 != previous_wheel_events.1;
         for rule in profile.macro_rules.iter().filter(|rule| rule.enabled) {
+            let normalized_trigger = rule.trigger_key.trim().to_uppercase();
+            let wheel_triggered = match normalized_trigger.as_str() {
+                "SCROLL UP" => Some(wheel_up_triggered),
+                "SCROLL DOWN" => Some(wheel_down_triggered),
+                _ => None,
+            };
+            if let Some(triggered) = wheel_triggered {
+                if triggered {
+                    emit_event(
+                        &app,
+                        "macro",
+                        format!("Macro shortcut used: {} ({})", rule.name, rule.trigger_key),
+                    );
+                    submit_action(&macro_workers, &rule.id);
+                }
+                continue;
+            }
+
             let is_down = input::is_key_down(&rule.trigger_key);
             let was_down = pressed_triggers.contains(&rule.id);
 
             if is_down && !was_down {
                 pressed_triggers.insert(rule.id.clone());
+                if rule.repeat_while_held {
+                    if let Some(worker_state) = macro_trigger_states.get(&rule.id) {
+                        worker_state.trigger_active.store(true, Ordering::Relaxed);
+                    }
+                }
                 emit_event(
                     &app,
                     "macro",
@@ -519,11 +575,28 @@ fn input_detection_loop(
                         rule.name, rule.trigger_key
                     ),
                 );
-                submit_action(&macro_workers, &rule.id);
+                if rule.repeat_while_held {
+                    if let Some(worker_state) = macro_trigger_states.get(&rule.id) {
+                        if worker_state
+                            .worker_running
+                            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+                            .is_ok()
+                            && !submit_action(&macro_workers, &rule.id)
+                        {
+                            worker_state.worker_running.store(false, Ordering::Release);
+                        }
+                    }
+                } else {
+                    submit_action(&macro_workers, &rule.id);
+                }
             } else if !is_down && was_down {
                 pressed_triggers.remove(&rule.id);
+                if let Some(worker_state) = macro_trigger_states.get(&rule.id) {
+                    worker_state.trigger_active.store(false, Ordering::Relaxed);
+                }
             }
         }
+        previous_wheel_events = current_wheel_events;
 
         for rule in profile
             .inventory_stash_rules
@@ -569,6 +642,31 @@ fn input_detection_loop(
             }
         }
 
+        for rule in profile
+            .stash_inventory_rules
+            .iter()
+            .filter(|rule| rule.enabled)
+        {
+            let is_down = input::is_key_down(&rule.trigger_key);
+            let trigger_id = format!("stash-inventory:{}", rule.id);
+            let was_down = pressed_triggers.contains(&trigger_id);
+
+            if is_down && !was_down {
+                pressed_triggers.insert(trigger_id.clone());
+                emit_event(
+                    &app,
+                    "stashInventory",
+                    format!(
+                        "Stash to inventory shortcut pressed: {} ({})",
+                        rule.name, rule.trigger_key
+                    ),
+                );
+                submit_action(&stash_inventory_workers, &rule.id);
+            } else if !is_down && was_down {
+                pressed_triggers.remove(&trigger_id);
+            }
+        }
+
         for rule in profile.toggle_hold_rules.iter().filter(|rule| rule.enabled) {
             let trigger_is_down = input::is_key_down(&rule.trigger_key);
             let waiting_for_release = toggle_waiting_for_release.contains(&rule.id);
@@ -610,6 +708,9 @@ fn input_detection_loop(
         }
     }
 
+    for worker_state in macro_trigger_states.values() {
+        worker_state.trigger_active.store(false, Ordering::Relaxed);
+    }
     drop(macro_workers);
     for worker in worker_threads {
         let _ = worker.join();
@@ -813,7 +914,12 @@ pub fn test_pixel_actions(app: &AppHandle, rule: &PixelRule) -> Result<(), Strin
         return Err("This rule has no actions to test".into());
     }
     for step in &steps {
-        if !input::supports_key(&step.key) {
+        let supported = if rule.trigger_mode == "hold" {
+            input::supports_key(&step.key)
+        } else {
+            input::supports_action(&step.key)
+        };
+        if !supported {
             return Err(format!("Unsupported action: {}", step.key));
         }
     }
@@ -926,6 +1032,55 @@ fn pixel_steps(rule: &PixelRule) -> Vec<MacroStep> {
         .collect()
 }
 
+fn spawn_macro_worker(
+    app: AppHandle,
+    stop: Arc<AtomicBool>,
+    guard_active: Arc<AtomicBool>,
+    rule: MacroRule,
+    worker_state: MacroWorkerState,
+    receiver: Receiver<()>,
+    inputs: InputOwners,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        while !stop.load(Ordering::Relaxed) {
+            if receiver.recv_timeout(Duration::from_millis(25)).is_err() {
+                continue;
+            }
+            if !guard_active.load(Ordering::Relaxed) {
+                worker_state.worker_running.store(false, Ordering::Release);
+                continue;
+            }
+
+            loop {
+                execute_action_chain(&app, &rule.name, &rule.steps, &stop, &guard_active, &inputs);
+
+                if !rule.repeat_while_held {
+                    break;
+                }
+                worker_state.worker_running.store(false, Ordering::Release);
+                if !should_repeat_macro(&worker_state, &stop, &guard_active)
+                    || worker_state
+                        .worker_running
+                        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+                        .is_err()
+                {
+                    break;
+                }
+            }
+        }
+    })
+}
+
+fn should_repeat_macro(
+    worker_state: &MacroWorkerState,
+    stop: &AtomicBool,
+    guard_active: &AtomicBool,
+) -> bool {
+    worker_state.trigger_active.load(Ordering::Relaxed)
+        && !stop.load(Ordering::Relaxed)
+        && guard_active.load(Ordering::Relaxed)
+}
+
 fn spawn_action_worker(
     app: AppHandle,
     stop: Arc<AtomicBool>,
@@ -1010,6 +1165,38 @@ fn spawn_inventory_worker(
     })
 }
 
+fn spawn_stash_inventory_worker(
+    app: AppHandle,
+    stop: Arc<AtomicBool>,
+    guard_active: Arc<AtomicBool>,
+    rule: StashInventoryRule,
+    receiver: Receiver<()>,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        while !stop.load(Ordering::Relaxed) {
+            if receiver.recv_timeout(Duration::from_millis(25)).is_err() {
+                continue;
+            }
+            if !guard_active.load(Ordering::Relaxed) {
+                continue;
+            }
+            match stash_inventory::send_occupied_slots(&rule, &stop, &guard_active) {
+                Ok(sent) => emit_event(
+                    &app,
+                    "stashInventory",
+                    format!(
+                        "{} sent {} slot{} to inventory",
+                        rule.name,
+                        sent,
+                        if sent == 1 { "" } else { "s" }
+                    ),
+                ),
+                Err(error) => emit_event(&app, "error", format!("{}: {error}", rule.name)),
+            }
+        }
+    })
+}
+
 fn submit_action(workers: &HashMap<String, SyncSender<()>>, rule_id: &str) -> bool {
     if let Some(worker) = workers.get(rule_id) {
         return worker.try_send(()).is_ok();
@@ -1034,7 +1221,11 @@ fn execute_action_chain(
             Ok(()) => emit_event(
                 app,
                 "action",
-                format!("{rule_name} pressed {} for {} ms", step.key, press_ms),
+                if input::is_scroll_action(&step.key) {
+                    format!("{rule_name} emitted {}", step.key)
+                } else {
+                    format!("{rule_name} pressed {} for {} ms", step.key, press_ms)
+                },
             ),
             Err(error) if error != "Runtime stopped" => emit_event(app, "error", error),
             Err(_) => {}
@@ -1052,6 +1243,13 @@ fn interruptible_tap(
     guard_active: &Arc<AtomicBool>,
     inputs: &InputOwners,
 ) -> Result<(), String> {
+    if input::is_scroll_action(key) {
+        if stop.load(Ordering::Relaxed) || !guard_active.load(Ordering::Relaxed) {
+            return Err("Runtime stopped".into());
+        }
+        return input::perform_scroll_action(key);
+    }
+
     inputs.acquire(key)?;
     let completed = interruptible_sleep(press_ms, stop, guard_active);
     let release_result = inputs.release(key);
@@ -1181,10 +1379,17 @@ fn play_toggle_sound(_is_on: bool, _enabled: bool) {}
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, sync::mpsc::sync_channel};
+    use std::{
+        collections::HashMap,
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            mpsc::sync_channel,
+        },
+    };
 
     use super::{
-        combine_conditions, combine_secondary_conditions, should_auto_release_toggle, submit_action,
+        combine_conditions, combine_secondary_conditions, should_auto_release_toggle,
+        should_repeat_macro, submit_action, MacroWorkerState,
     };
     use crate::profiles::ToggleHoldRule;
 
@@ -1214,6 +1419,27 @@ mod tests {
 
         assert!(submit_action(&workers, "rule"));
         assert!(!submit_action(&workers, "rule"));
+    }
+
+    #[test]
+    fn held_macro_repeats_only_while_active_and_runtime_is_available() {
+        let state = MacroWorkerState::default();
+        let stop = AtomicBool::new(false);
+        let guard_active = AtomicBool::new(true);
+
+        state.trigger_active.store(true, Ordering::Relaxed);
+        assert!(should_repeat_macro(&state, &stop, &guard_active));
+
+        state.trigger_active.store(false, Ordering::Relaxed);
+        assert!(!should_repeat_macro(&state, &stop, &guard_active));
+
+        state.trigger_active.store(true, Ordering::Relaxed);
+        guard_active.store(false, Ordering::Relaxed);
+        assert!(!should_repeat_macro(&state, &stop, &guard_active));
+
+        guard_active.store(true, Ordering::Relaxed);
+        stop.store(true, Ordering::Relaxed);
+        assert!(!should_repeat_macro(&state, &stop, &guard_active));
     }
 
     #[test]

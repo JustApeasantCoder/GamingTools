@@ -6,7 +6,7 @@ export interface TimingIssue {
 }
 
 export function getStepTimingIssue(step: MacroStep): TimingIssue | undefined {
-  if (step.pressDuration.enabled && step.pressDuration.minMs > step.pressDuration.maxMs) {
+  if (!isScrollAction(step.key) && step.pressDuration.enabled && step.pressDuration.minMs > step.pressDuration.maxMs) {
     return { stepId: step.id, message: 'Minimum hold must not exceed maximum hold.' }
   }
   if (step.humanizedDelay.enabled && step.humanizedDelay.minMs > step.humanizedDelay.maxMs) {
@@ -26,14 +26,18 @@ export function getMacroDurationRange(macro: MacroRule) {
   return macro.steps.reduce(
     (duration, step) => ({
       minMs: duration.minMs
-        + (step.pressDuration.enabled ? step.pressDuration.minMs : 0)
+        + (!isScrollAction(step.key) && step.pressDuration.enabled ? step.pressDuration.minMs : 0)
         + (step.humanizedDelay.enabled ? step.humanizedDelay.minMs : 0),
       maxMs: duration.maxMs
-        + (step.pressDuration.enabled ? step.pressDuration.maxMs : 0)
+        + (!isScrollAction(step.key) && step.pressDuration.enabled ? step.pressDuration.maxMs : 0)
         + (step.humanizedDelay.enabled ? step.humanizedDelay.maxMs : 0),
     }),
     { minMs: 0, maxMs: 0 },
   )
+}
+
+function isScrollAction(key: string) {
+  return key.trim().toUpperCase() === 'SCROLL UP' || key.trim().toUpperCase() === 'SCROLL DOWN'
 }
 
 export function formatDuration(milliseconds: number) {

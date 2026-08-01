@@ -11,7 +11,7 @@ interface MacroRecorderProps {
 
 export function MacroRecorder({ onRecorded, willReplaceExisting = false }: MacroRecorderProps) {
   const [recording, setRecording] = useState(false)
-  const [message, setMessage] = useState('Captures supported keyboard and mouse-button presses with measured timing.')
+  const [message, setMessage] = useState('Captures supported keyboard and mouse-button presses with measured timing. Wheel steps can be added from Action Settings.')
 
   const start = async () => {
     if (willReplaceExisting && !window.confirm('Recording will replace the current action list. Continue?')) return

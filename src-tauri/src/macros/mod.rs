@@ -26,6 +26,12 @@ pub fn validate_rules(rules: &[MacroRule]) -> ValidationResult {
         if rule.enabled && rule.steps.is_empty() {
             errors.push(format!("{} has no action steps", rule.name));
         }
+        if rule.repeat_while_held && input::is_scroll_action(&rule.trigger_key) {
+            errors.push(format!(
+                "{} cannot repeat while held because mouse wheel shortcuts have no held state",
+                rule.name
+            ));
+        }
         for step in &rule.steps {
             validate_step(step, &mut errors);
         }
@@ -41,6 +47,13 @@ pub fn validate_profile(profile: &Profile) -> ValidationResult {
     let mut errors = validate_rules(&profile.macro_rules).errors;
     let mut ids = HashSet::new();
     let toggle_hotkey = profile.runtime_settings.toggle_hotkey.trim();
+    let profile_name = profile.name.trim();
+
+    if profile_name.is_empty() {
+        errors.push("Profile name cannot be empty".into());
+    } else if profile_name.chars().count() > 80 {
+        errors.push("Profile name cannot exceed 80 characters".into());
+    }
 
     validate_key(toggle_hotkey, "Runtime toggle hotkey", &mut errors);
     if profile.runtime_settings.foreground_guard.enabled {
@@ -67,7 +80,7 @@ pub fn validate_profile(profile: &Profile) -> ValidationResult {
 
     for rule in profile.macro_rules.iter().filter(|rule| rule.enabled) {
         validate_id(&rule.id, "macro rule", &mut ids, &mut errors);
-        validate_key(
+        validate_action(
             &rule.trigger_key,
             &format!("{} trigger", rule.name),
             &mut errors,
@@ -80,7 +93,7 @@ pub fn validate_profile(profile: &Profile) -> ValidationResult {
         );
         for step in &rule.steps {
             validate_id(&step.id, "macro step", &mut ids, &mut errors);
-            validate_key(&step.key, &format!("{} action", rule.name), &mut errors);
+            validate_action(&step.key, &format!("{} action", rule.name), &mut errors);
             reject_toggle_conflict(
                 &step.key,
                 toggle_hotkey,
@@ -123,7 +136,11 @@ pub fn validate_profile(profile: &Profile) -> ValidationResult {
             errors.push(format!("{} has no output actions", rule.name));
         }
         for key in steps {
-            validate_key(key, &format!("{} output", rule.name), &mut errors);
+            if rule.trigger_mode == "hold" {
+                validate_key(key, &format!("{} output", rule.name), &mut errors);
+            } else {
+                validate_action(key, &format!("{} output", rule.name), &mut errors);
+            }
             reject_toggle_conflict(
                 key,
                 toggle_hotkey,
@@ -192,29 +209,23 @@ pub fn validate_profile(profile: &Profile) -> ValidationResult {
         }
     }
 
-    let mut trigger_owners = HashSet::new();
-    for (label, key) in profile
+    let mut trigger_owners = profile
         .macro_rules
+        .iter()
+        .filter(|rule| rule.enabled)
+        .map(|rule| rule.trigger_key.trim().to_uppercase())
+        .filter(|key| !key.is_empty())
+        .collect::<HashSet<_>>();
+    for (label, key) in profile
+        .toggle_hold_rules
         .iter()
         .filter(|rule| rule.enabled)
         .map(|rule| {
             (
-                format!("{} macro trigger", rule.name),
+                format!("{} toggle trigger", rule.name),
                 rule.trigger_key.as_str(),
             )
         })
-        .chain(
-            profile
-                .toggle_hold_rules
-                .iter()
-                .filter(|rule| rule.enabled)
-                .map(|rule| {
-                    (
-                        format!("{} toggle trigger", rule.name),
-                        rule.trigger_key.as_str(),
-                    )
-                }),
-        )
         .chain(
             profile
                 .inventory_stash_rules
@@ -231,6 +242,18 @@ pub fn validate_profile(profile: &Profile) -> ValidationResult {
                             rule.capture_baseline_key.as_str(),
                         ),
                     ]
+                }),
+        )
+        .chain(
+            profile
+                .stash_inventory_rules
+                .iter()
+                .filter(|rule| rule.enabled)
+                .map(|rule| {
+                    (
+                        format!("{} reverse stash trigger", rule.name),
+                        rule.trigger_key.as_str(),
+                    )
                 }),
         )
         .chain(profile.tablet_scanner_rules.iter().map(|rule| {
@@ -310,6 +333,40 @@ pub fn validate_profile(profile: &Profile) -> ValidationResult {
         }
     }
 
+    for rule in profile
+        .stash_inventory_rules
+        .iter()
+        .filter(|rule| rule.enabled)
+    {
+        validate_id(&rule.id, "stash inventory rule", &mut ids, &mut errors);
+        validate_key(
+            &rule.trigger_key,
+            &format!("{} trigger", rule.name),
+            &mut errors,
+        );
+        reject_toggle_conflict(
+            &rule.trigger_key,
+            toggle_hotkey,
+            &format!("{} trigger", rule.name),
+            &mut errors,
+        );
+        if rule.columns == 0 || rule.rows == 0 {
+            errors.push(format!("{} grid must have rows and columns", rule.name));
+        }
+        if rule.grid.width <= 0 || rule.grid.height <= 0 {
+            errors.push(format!("{} grid size must be positive", rule.name));
+        }
+        if !screen::is_valid_hex_color(&rule.empty_color) {
+            errors.push(format!("{} has an invalid empty slot color", rule.name));
+        }
+        if rule.humanization.enabled && rule.humanization.min_ms > rule.humanization.max_ms {
+            errors.push(format!(
+                "{} humanized min ms is greater than max ms",
+                rule.name
+            ));
+        }
+    }
+
     for rule in &profile.tablet_scanner_rules {
         validate_id(&rule.id, "tablet scanner rule", &mut ids, &mut errors);
         validate_key(
@@ -375,6 +432,14 @@ fn validate_key(key: &str, label: &str, errors: &mut Vec<String>) {
     }
 }
 
+fn validate_action(action: &str, label: &str, errors: &mut Vec<String>) {
+    if action.trim().is_empty() {
+        errors.push(format!("{label} is missing an action"));
+    } else if !input::supports_action(action) {
+        errors.push(format!("{label} uses unsupported action: {action}"));
+    }
+}
+
 fn reject_toggle_conflict(key: &str, toggle_hotkey: &str, label: &str, errors: &mut Vec<String>) {
     if !toggle_hotkey.is_empty() && key.trim().eq_ignore_ascii_case(toggle_hotkey) {
         errors.push(format!("{label} conflicts with the runtime toggle hotkey"));
@@ -407,13 +472,16 @@ fn validate_step(step: &MacroStep, errors: &mut Vec<String>) {
     if step.key.trim().is_empty() {
         errors.push(format!("Step {} is missing a key", step.id));
     }
-    if step.press_duration.enabled && step.press_duration.min_ms > step.press_duration.max_ms {
+    if !input::is_scroll_action(&step.key)
+        && step.press_duration.enabled
+        && step.press_duration.min_ms > step.press_duration.max_ms
+    {
         errors.push(format!(
             "Step {} press duration min ms is greater than max ms",
             step.id
         ));
     }
-    if step.press_duration.max_ms > 10_000 {
+    if !input::is_scroll_action(&step.key) && step.press_duration.max_ms > 10_000 {
         errors.push(format!("Step {} press duration is too high", step.id));
     }
     if step.humanized_delay.enabled && step.humanized_delay.min_ms > step.humanized_delay.max_ms {
@@ -449,6 +517,7 @@ mod tests {
             name: "Bad Rule".into(),
             enabled: true,
             trigger_key: "F6".into(),
+            repeat_while_held: false,
             steps: vec![MacroStep {
                 id: "step".into(),
                 key: "A".into(),
@@ -468,6 +537,36 @@ mod tests {
         let result = validate_rules(&rules);
         assert!(!result.valid);
         assert_eq!(result.errors.len(), 1);
+    }
+
+    #[test]
+    fn validation_rejects_repeat_while_held_for_wheel_shortcuts() {
+        let rules = vec![MacroRule {
+            id: "wheel-loop".into(),
+            name: "Wheel loop".into(),
+            enabled: true,
+            trigger_key: "SCROLL UP".into(),
+            repeat_while_held: true,
+            steps: vec![MacroStep {
+                id: "step".into(),
+                key: "A".into(),
+                press_duration: HumanizationSettings {
+                    enabled: true,
+                    min_ms: 10,
+                    max_ms: 20,
+                },
+                humanized_delay: HumanizationSettings {
+                    enabled: false,
+                    min_ms: 0,
+                    max_ms: 0,
+                },
+            }],
+        }];
+
+        let result = validate_rules(&rules);
+
+        assert!(!result.valid);
+        assert!(result.errors[0].contains("no held state"));
     }
 
     #[test]

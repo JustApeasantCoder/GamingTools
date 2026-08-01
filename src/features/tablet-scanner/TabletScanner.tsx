@@ -52,42 +52,49 @@ export function TabletScanner({ profile, onProfileChange, onScan, onScanAndCraft
   const updateRule = useCallback((nextRule: TabletScannerRule) => {
     onProfileChange({ ...profile, tabletScannerRules: [nextRule] })
   }, [onProfileChange, profile])
+  const updateRuleRef = useRef(updateRule)
 
   useEffect(() => {
     ruleRef.current = rule
-  }, [rule])
+    updateRuleRef.current = updateRule
+  }, [rule, updateRule])
 
   useEffect(() => {
     if (!hasTauriRuntime()) return
+    let cancelled = false
     let unlistenGrid: (() => void) | undefined
     let unlistenReady: (() => void) | undefined
     let unlistenClosed: (() => void) | undefined
 
     void listen<TabletScannerRule['grid']>('tablet-scanner-overlay-grid-change', (event) => {
-      updateRule({ ...ruleRef.current, grid: event.payload })
+      updateRuleRef.current({ ...ruleRef.current, grid: event.payload })
     }).then((dispose) => {
-      unlistenGrid = dispose
+      if (cancelled) dispose()
+      else unlistenGrid = dispose
     })
 
     void listen('tablet-scanner-overlay-ready', () => {
       setOverlayOpen(true)
       void emitTo('tablet-scanner-overlay', 'tablet-scanner-overlay-config', ruleRef.current)
     }).then((dispose) => {
-      unlistenReady = dispose
+      if (cancelled) dispose()
+      else unlistenReady = dispose
     })
 
     void listen('tablet-scanner-overlay-closed', () => {
       setOverlayOpen(false)
     }).then((dispose) => {
-      unlistenClosed = dispose
+      if (cancelled) dispose()
+      else unlistenClosed = dispose
     })
 
     return () => {
+      cancelled = true
       unlistenGrid?.()
       unlistenReady?.()
       unlistenClosed?.()
     }
-  }, [updateRule])
+  }, [])
 
   useEffect(() => {
     if (!hasTauriRuntime()) return
@@ -243,6 +250,7 @@ export function TabletScanner({ profile, onProfileChange, onScan, onScanAndCraft
             <span>{targetRule.targetExecutable || 'No target app'}</span>
             <span>{report ? `${report.tablets.length} tablets found` : `${slots.length} slots`}</span>
             <span>{report ? `${valuableCount} worth checking` : `${rule.scanDelayMs} ms copy wait`}</span>
+            <span>Empty tolerance {rule.emptyTolerance}</span>
           </p>
         </div>
         <div className="toolbar-group">
@@ -280,6 +288,7 @@ export function TabletScanner({ profile, onProfileChange, onScan, onScanAndCraft
             <label>Columns<input type="number" min={1} max={24} value={rule.columns} onChange={(event) => updateRule({ ...rule, columns: clamp(Number(event.target.value), 1, 24) })} /></label>
             <label>Rows<input type="number" min={1} max={24} value={rule.rows} onChange={(event) => updateRule({ ...rule, rows: clamp(Number(event.target.value), 1, 24) })} /></label>
             <label>Copy wait ms<input type="number" min={20} max={1000} value={rule.scanDelayMs} onChange={(event) => updateRule({ ...rule, scanDelayMs: clamp(Number(event.target.value), 20, 1000) })} /></label>
+            <label>Empty tolerance<input type="number" min={0} max={64} value={rule.emptyTolerance} onChange={(event) => updateRule({ ...rule, emptyTolerance: clamp(Number(event.target.value), 0, 64) })} /></label>
             <label>Target app<input value={rule.targetExecutable} onChange={(event) => updateRule({ ...rule, targetExecutable: event.target.value })} placeholder="PathOfExileSteam.exe" /></label>
             <div className="inventory-button-stack">
               <Button icon={Crosshair} onClick={captureTarget} disabled={captureState === 'waiting'}>
@@ -292,7 +301,7 @@ export function TabletScanner({ profile, onProfileChange, onScan, onScanAndCraft
       </section>
 
       <section className="workflow-section">
-        <header><span><ShieldCheck size={16} /></span><div><h3>Scan behavior</h3><p>Moves the cursor over each configured slot, copies the hovered item text, then ranks known valuable tablet rolls locally.</p></div></header>
+        <header><span><ShieldCheck size={16} /></span><div><h3>Scan behavior</h3><p>Parks below the grid, detects all empty slots before tooltips open, then copies and ranks the remaining tablets locally.</p></div></header>
         {scanError ? <div className="notice notice-error">{scanError}</div> : null}
         {craftError ? <div className="notice notice-error">{craftError}</div> : null}
         {craftReport ? <div className="notice">{craftReport.actions.length} craft action{craftReport.actions.length === 1 ? '' : 's'} completed. Final scan found {craftReport.finalScan.tablets.length} tablet{craftReport.finalScan.tablets.length === 1 ? '' : 's'}.</div> : null}
@@ -416,6 +425,7 @@ function normalizeRule(rule?: TabletScannerRule): TabletScannerRule {
     rows: 12,
     grid: { x: 18, y: 126, width: 632, height: 632 },
     scanDelayMs: 90,
+    emptyTolerance: 8,
     craft: {
       transmutation: { x: 0, y: 0 },
       augmentation: { x: 0, y: 0 },

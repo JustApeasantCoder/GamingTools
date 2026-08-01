@@ -4,8 +4,8 @@ use crate::{
     input,
     macros::ValidationResult,
     profiles::{
-        self, InventorySlotSnapshot, InventoryStashRule, PixelPoint, PixelRule, Profile,
-        ProfileStore, TabletScannerRule,
+        self, InventorySlotSnapshot, InventoryStashRule, MapCrafterRule, PixelPoint, PixelRule,
+        Profile, ProfileStore, StashInventoryRule, TabletScannerRule,
     },
     recorder::RecorderState,
     runtime::RuntimeState,
@@ -160,6 +160,11 @@ pub fn capture_inventory_stash_snapshot(
 }
 
 #[tauri::command]
+pub fn test_stash_inventory_rule(rule: StashInventoryRule) -> Result<usize, String> {
+    crate::stash_inventory::test_rule(&rule)
+}
+
+#[tauri::command]
 pub fn scan_tablet_stash(
     rule: TabletScannerRule,
 ) -> Result<crate::tablets::TabletScanReport, String> {
@@ -198,10 +203,35 @@ pub fn move_tablet_to_inventory(
 }
 
 #[tauri::command]
-pub fn validate_key_sequence(sequence: Vec<String>) -> Result<ValidationResult, String> {
+pub fn scan_map_grid(rule: MapCrafterRule) -> Result<crate::map_crafter::MapScanReport, String> {
+    crate::map_crafter::scan(&rule)
+}
+
+#[tauri::command]
+pub fn craft_maps(rule: MapCrafterRule) -> Result<crate::map_crafter::MapCraftReport, String> {
+    crate::map_crafter::craft(&rule)
+}
+
+#[tauri::command]
+pub fn capture_map_currency_location(wait_ms: u64) -> Result<crate::profiles::ScreenPoint, String> {
+    crate::map_crafter::capture_cursor_location(wait_ms)
+}
+
+#[tauri::command]
+pub fn validate_key_sequence(
+    sequence: Vec<String>,
+    allow_scroll: Option<bool>,
+) -> Result<ValidationResult, String> {
+    let supports_input = |key: &str| {
+        if allow_scroll.unwrap_or(false) {
+            input::supports_action(key)
+        } else {
+            input::supports_key(key)
+        }
+    };
     let errors = sequence
         .into_iter()
-        .filter(|key| !input::supports_key(key))
+        .filter(|key| !supports_input(key))
         .map(|key| format!("Unsupported key: {key}"))
         .collect::<Vec<_>>();
 

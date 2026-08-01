@@ -5,7 +5,9 @@
   "windows": [
     "main",
     "inventory-overlay",
-    "tablet-scanner-overlay"
+    "stash-inventory-overlay",
+    "tablet-scanner-overlay",
+    "map-crafter-overlay"
   ],
   "permissions": [
     "core:default",

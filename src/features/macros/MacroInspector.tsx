@@ -29,17 +29,24 @@ export function MacroInspector({ macro, step, open, onClose, onStepChange }: Mac
       {step ? (
         <div className="inspector-form">
           <label>
-            Key or mouse button
-            <KeyCaptureButton value={step.key} label="Change" onChange={(key) => onStepChange({ ...step, key })} />
+            Key, mouse button, or wheel
+            <KeyCaptureButton
+              value={step.key}
+              label="Change"
+              allowWheel
+              onChange={(key) => onStepChange({ ...step, key })}
+            />
           </label>
 
-          <fieldset className="timing-group">
-            <legend>Hold duration</legend>
-            <div className="two-col">
-              <label>Minimum (ms)<input type="number" min="0" value={step.pressDuration.minMs} onChange={(event) => onStepChange({ ...step, pressDuration: { ...step.pressDuration, minMs: Number(event.target.value) } })} /></label>
-              <label>Maximum (ms)<input type="number" min="0" value={step.pressDuration.maxMs} onChange={(event) => onStepChange({ ...step, pressDuration: { ...step.pressDuration, maxMs: Number(event.target.value) } })} /></label>
-            </div>
-          </fieldset>
+          {!isScrollAction(step.key) && (
+            <fieldset className="timing-group">
+              <legend>Hold duration</legend>
+              <div className="two-col">
+                <label>Minimum (ms)<input type="number" min="0" value={step.pressDuration.minMs} onChange={(event) => onStepChange({ ...step, pressDuration: { ...step.pressDuration, minMs: Number(event.target.value) } })} /></label>
+                <label>Maximum (ms)<input type="number" min="0" value={step.pressDuration.maxMs} onChange={(event) => onStepChange({ ...step, pressDuration: { ...step.pressDuration, maxMs: Number(event.target.value) } })} /></label>
+              </div>
+            </fieldset>
+          )}
 
           <fieldset className="timing-group">
             <legend className="switch-row">
@@ -54,9 +61,13 @@ export function MacroInspector({ macro, step, open, onClose, onStepChange }: Mac
 
           {timingIssue
             ? <div className="notice notice-error"><Activity size={16} /> {timingIssue.message}</div>
-            : <div className="notice"><Activity size={16} /> The wait begins after this action is released.</div>}
+            : <div className="notice"><Activity size={16} /> {isScrollAction(step.key) ? 'Each action emits one wheel step.' : 'The wait begins after this action is released.'}</div>}
         </div>
       ) : <div className="empty-panel">Select an action to edit its timing.</div>}
     </aside>
   )
+}
+
+function isScrollAction(key: string) {
+  return key.trim().toUpperCase() === 'SCROLL UP' || key.trim().toUpperCase() === 'SCROLL DOWN'
 }

@@ -32,6 +32,8 @@ pub struct MacroRule {
     pub name: String,
     pub enabled: bool,
     pub trigger_key: String,
+    #[serde(default)]
+    pub repeat_while_held: bool,
     pub steps: Vec<MacroStep>,
 }
 
@@ -136,6 +138,30 @@ pub struct ScreenPoint {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct MapCraftSettings {
+    #[serde(default, alias = "augmentation")]
+    pub alchemy: ScreenPoint,
+    #[serde(default)]
+    pub exalted: ScreenPoint,
+    #[serde(default)]
+    pub scouring: ScreenPoint,
+    #[serde(default = "default_map_craft_delay_ms")]
+    pub craft_delay_ms: u64,
+}
+
+impl Default for MapCraftSettings {
+    fn default() -> Self {
+        Self {
+            alchemy: ScreenPoint::default(),
+            exalted: ScreenPoint::default(),
+            scouring: ScreenPoint::default(),
+            craft_delay_ms: default_map_craft_delay_ms(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct TabletCraftSettings {
     #[serde(default)]
     pub transmutation: ScreenPoint,
@@ -222,6 +248,28 @@ pub struct InventoryStashRule {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct StashInventoryRule {
+    pub id: String,
+    pub name: String,
+    pub enabled: bool,
+    #[serde(default = "default_stash_inventory_trigger_key")]
+    pub trigger_key: String,
+    #[serde(default = "default_stash_inventory_columns")]
+    pub columns: u8,
+    #[serde(default = "default_stash_inventory_rows")]
+    pub rows: u8,
+    #[serde(default = "default_stash_inventory_grid")]
+    pub grid: InventoryGrid,
+    #[serde(default = "default_stash_inventory_empty_color")]
+    pub empty_color: String,
+    #[serde(default = "default_inventory_tolerance")]
+    pub tolerance: u8,
+    #[serde(default = "default_inventory_humanization")]
+    pub humanization: HumanizationSettings,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct TabletScannerRule {
     pub id: String,
     pub name: String,
@@ -237,10 +285,33 @@ pub struct TabletScannerRule {
     pub grid: InventoryGrid,
     #[serde(default = "default_tablet_scanner_delay_ms")]
     pub scan_delay_ms: u64,
+    #[serde(default = "default_empty_slot_tolerance")]
+    pub empty_tolerance: u8,
     #[serde(default)]
     pub craft: TabletCraftSettings,
     #[serde(default)]
     pub value_rules: Vec<TabletValueRuleConfig>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MapCrafterRule {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub target_executable: String,
+    #[serde(default = "default_map_crafter_columns")]
+    pub columns: u8,
+    #[serde(default = "default_map_crafter_rows")]
+    pub rows: u8,
+    #[serde(default = "default_map_crafter_grid")]
+    pub grid: InventoryGrid,
+    #[serde(default = "default_map_crafter_delay_ms")]
+    pub scan_delay_ms: u64,
+    #[serde(default = "default_empty_slot_tolerance")]
+    pub empty_tolerance: u8,
+    #[serde(default)]
+    pub craft: MapCraftSettings,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -258,7 +329,11 @@ pub struct Profile {
     #[serde(default)]
     pub inventory_stash_rules: Vec<InventoryStashRule>,
     #[serde(default)]
+    pub stash_inventory_rules: Vec<StashInventoryRule>,
+    #[serde(default)]
     pub tablet_scanner_rules: Vec<TabletScannerRule>,
+    #[serde(default)]
+    pub map_crafter_rules: Vec<MapCrafterRule>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -434,7 +509,13 @@ fn regenerate_ids(profile: &mut Profile) {
     for rule in &mut profile.inventory_stash_rules {
         rule.id = uuid::Uuid::new_v4().to_string();
     }
+    for rule in &mut profile.stash_inventory_rules {
+        rule.id = uuid::Uuid::new_v4().to_string();
+    }
     for rule in &mut profile.tablet_scanner_rules {
+        rule.id = uuid::Uuid::new_v4().to_string();
+    }
+    for rule in &mut profile.map_crafter_rules {
         rule.id = uuid::Uuid::new_v4().to_string();
     }
 }
@@ -474,10 +555,18 @@ fn normalize_store(mut store: ProfileStore) -> ProfileStore {
                 .inventory_stash_rules
                 .push(default_inventory_stash_rule());
         }
+        if profile.stash_inventory_rules.is_empty() {
+            profile
+                .stash_inventory_rules
+                .push(default_stash_inventory_rule());
+        }
         if profile.tablet_scanner_rules.is_empty() {
             profile
                 .tablet_scanner_rules
                 .push(default_tablet_scanner_rule());
+        }
+        if profile.map_crafter_rules.is_empty() {
+            profile.map_crafter_rules.push(default_map_crafter_rule());
         }
     }
     if !store
@@ -610,6 +699,31 @@ fn default_inventory_humanization() -> HumanizationSettings {
     }
 }
 
+fn default_stash_inventory_trigger_key() -> String {
+    "F10".into()
+}
+
+fn default_stash_inventory_columns() -> u8 {
+    12
+}
+
+fn default_stash_inventory_rows() -> u8 {
+    12
+}
+
+fn default_stash_inventory_grid() -> InventoryGrid {
+    InventoryGrid {
+        x: 18,
+        y: 126,
+        width: 632,
+        height: 632,
+    }
+}
+
+fn default_stash_inventory_empty_color() -> String {
+    "#17130f".into()
+}
+
 fn default_tablet_scanner_columns() -> u8 {
     12
 }
@@ -631,6 +745,10 @@ fn default_tablet_scanner_delay_ms() -> u64 {
     90
 }
 
+fn default_empty_slot_tolerance() -> u8 {
+    8
+}
+
 fn default_tablet_scanner_trigger_key() -> String {
     "F9".into()
 }
@@ -640,6 +758,31 @@ fn default_tab_switch_delay_ms() -> u64 {
 }
 
 fn default_tablet_craft_delay_ms() -> u64 {
+    90
+}
+
+fn default_map_crafter_columns() -> u8 {
+    12
+}
+
+fn default_map_crafter_rows() -> u8 {
+    6
+}
+
+fn default_map_crafter_grid() -> InventoryGrid {
+    InventoryGrid {
+        x: 18,
+        y: 126,
+        width: 632,
+        height: 316,
+    }
+}
+
+fn default_map_crafter_delay_ms() -> u64 {
+    90
+}
+
+fn default_map_craft_delay_ms() -> u64 {
     90
 }
 
@@ -672,6 +815,7 @@ fn default_store() -> ProfileStore {
                 name: "Farming Loop".into(),
                 enabled: true,
                 trigger_key: "F6".into(),
+                repeat_while_held: false,
                 steps: vec![
                     MacroStep {
                         id: "step-a".into(),
@@ -759,7 +903,9 @@ fn default_store() -> ProfileStore {
                 release_key: String::new(),
             }],
             inventory_stash_rules: vec![default_inventory_stash_rule()],
+            stash_inventory_rules: vec![default_stash_inventory_rule()],
             tablet_scanner_rules: vec![default_tablet_scanner_rule()],
+            map_crafter_rules: vec![default_map_crafter_rule()],
         }],
     }
 }
@@ -786,6 +932,21 @@ fn default_inventory_stash_rule() -> InventoryStashRule {
     }
 }
 
+fn default_stash_inventory_rule() -> StashInventoryRule {
+    StashInventoryRule {
+        id: "stash-inventory-default".into(),
+        name: "Stash to inventory".into(),
+        enabled: false,
+        trigger_key: default_stash_inventory_trigger_key(),
+        columns: default_stash_inventory_columns(),
+        rows: default_stash_inventory_rows(),
+        grid: default_stash_inventory_grid(),
+        empty_color: default_stash_inventory_empty_color(),
+        tolerance: default_inventory_tolerance(),
+        humanization: default_inventory_humanization(),
+    }
+}
+
 fn default_tablet_scanner_rule() -> TabletScannerRule {
     TabletScannerRule {
         id: "tablet-scanner-default".into(),
@@ -796,8 +957,23 @@ fn default_tablet_scanner_rule() -> TabletScannerRule {
         rows: default_tablet_scanner_rows(),
         grid: default_tablet_scanner_grid(),
         scan_delay_ms: default_tablet_scanner_delay_ms(),
+        empty_tolerance: default_empty_slot_tolerance(),
         craft: TabletCraftSettings::default(),
         value_rules: Vec::new(),
+    }
+}
+
+fn default_map_crafter_rule() -> MapCrafterRule {
+    MapCrafterRule {
+        id: "map-crafter-default".into(),
+        name: "Map crafter".into(),
+        target_executable: String::new(),
+        columns: default_map_crafter_columns(),
+        rows: default_map_crafter_rows(),
+        grid: default_map_crafter_grid(),
+        scan_delay_ms: default_map_crafter_delay_ms(),
+        empty_tolerance: default_empty_slot_tolerance(),
+        craft: MapCraftSettings::default(),
     }
 }
 
@@ -830,6 +1006,32 @@ mod tests {
     }
 
     #[test]
+    fn old_macro_rules_default_to_one_run_per_press() {
+        let rule: MacroRule = serde_json::from_str(
+            r#"{"id":"macro","name":"Macro","enabled":true,"triggerKey":"F6","steps":[]}"#,
+        )
+        .unwrap();
+
+        assert!(!rule.repeat_while_held);
+    }
+
+    #[test]
+    fn old_scanner_rules_default_empty_tolerance() {
+        let tablet: TabletScannerRule =
+            serde_json::from_str(r#"{"id":"tablet","name":"Tablet scanner"}"#).unwrap();
+        let map: MapCrafterRule =
+            serde_json::from_str(r#"{"id":"map","name":"Map crafter"}"#).unwrap();
+        let legacy_map: MapCrafterRule = serde_json::from_str(
+            r#"{"id":"legacy-map","name":"Map crafter","craft":{"augmentation":{"x":123,"y":456}}}"#,
+        )
+        .unwrap();
+
+        assert_eq!(tablet.empty_tolerance, 8);
+        assert_eq!(map.empty_tolerance, 8);
+        assert_eq!(legacy_map.craft.alchemy, ScreenPoint { x: 123, y: 456 });
+    }
+
+    #[test]
     fn delete_profile_moves_active_profile() {
         let mut store = default_store();
         store.profiles.push(Profile {
@@ -845,7 +1047,9 @@ mod tests {
             pixel_rules: vec![],
             toggle_hold_rules: vec![],
             inventory_stash_rules: vec![],
+            stash_inventory_rules: vec![],
             tablet_scanner_rules: vec![],
+            map_crafter_rules: vec![],
         });
         store.active_profile_id = "second".into();
 
@@ -870,7 +1074,7 @@ mod tests {
         assert!(result
             .errors
             .iter()
-            .any(|error| error.contains("unsupported key")));
+            .any(|error| error.contains("unsupported action")));
         assert!(result
             .errors
             .iter()
@@ -885,6 +1089,101 @@ mod tests {
         let result = crate::macros::validate_profile(&profile);
 
         assert!(result.valid);
+    }
+
+    #[test]
+    fn validation_rejects_empty_and_overlong_profile_names() {
+        let mut profile = default_store().profiles.remove(0);
+        profile.name = "   ".into();
+
+        let empty_result = crate::macros::validate_profile(&profile);
+        assert!(empty_result
+            .errors
+            .iter()
+            .any(|error| error.contains("Profile name cannot be empty")));
+
+        profile.name = "x".repeat(81);
+        let overlong_result = crate::macros::validate_profile(&profile);
+        assert!(overlong_result
+            .errors
+            .iter()
+            .any(|error| error.contains("Profile name cannot exceed 80 characters")));
+    }
+
+    #[test]
+    fn validation_allows_multiple_macros_to_share_a_trigger() {
+        let mut profile = default_store().profiles.remove(0);
+        let mut second_macro = profile.macro_rules[0].clone();
+        second_macro.id = "macro-shared-trigger".into();
+        second_macro.name = "Second shared macro".into();
+        for (index, step) in second_macro.steps.iter_mut().enumerate() {
+            step.id = format!("shared-trigger-step-{index}");
+        }
+        profile.macro_rules.push(second_macro);
+
+        let result = crate::macros::validate_profile(&profile);
+
+        assert!(result.valid, "{:?}", result.errors);
+    }
+
+    #[test]
+    fn validation_still_rejects_macro_trigger_conflicts_with_other_features() {
+        let mut profile = default_store().profiles.remove(0);
+        profile.toggle_hold_rules[0].trigger_key = profile.macro_rules[0].trigger_key.clone();
+
+        let result = crate::macros::validate_profile(&profile);
+
+        assert!(!result.valid);
+        assert!(result
+            .errors
+            .iter()
+            .any(|error| error.contains("duplicates another automation trigger")));
+    }
+
+    #[test]
+    fn validation_rejects_stash_inventory_hotkey_conflicts() {
+        let mut profile = default_store().profiles.remove(0);
+        profile.stash_inventory_rules[0].enabled = true;
+        profile.stash_inventory_rules[0].trigger_key = profile.macro_rules[0].trigger_key.clone();
+
+        let result = crate::macros::validate_profile(&profile);
+
+        assert!(!result.valid);
+        assert!(result
+            .errors
+            .iter()
+            .any(|error| error.contains("reverse stash trigger")));
+    }
+
+    #[test]
+    fn validation_allows_wheel_actions_and_macro_triggers() {
+        let mut profile = default_store().profiles.remove(0);
+        profile.macro_rules[0].steps[0].key = "SCROLL UP".into();
+
+        let action_result = crate::macros::validate_profile(&profile);
+        assert!(action_result.valid, "{:?}", action_result.errors);
+
+        profile.macro_rules[0].trigger_key = "SCROLL DOWN".into();
+        let trigger_result = crate::macros::validate_profile(&profile);
+        assert!(trigger_result.valid, "{:?}", trigger_result.errors);
+    }
+
+    #[test]
+    fn validation_allows_wheel_for_tap_pixel_actions_but_not_hold_outputs() {
+        let mut profile = default_store().profiles.remove(0);
+        profile.pixel_rules[0].action_steps[0].key = "SCROLL DOWN".into();
+        profile.pixel_rules[0].trigger_mode = "trigger".into();
+
+        let tap_result = crate::macros::validate_profile(&profile);
+        assert!(tap_result.valid, "{:?}", tap_result.errors);
+
+        profile.pixel_rules[0].trigger_mode = "hold".into();
+        let hold_result = crate::macros::validate_profile(&profile);
+        assert!(!hold_result.valid);
+        assert!(hold_result
+            .errors
+            .iter()
+            .any(|error| error.contains("uses unsupported key: SCROLL DOWN")));
     }
 
     #[test]

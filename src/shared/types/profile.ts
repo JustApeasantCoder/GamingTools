@@ -16,6 +16,7 @@ export interface MacroRule {
   name: string
   enabled: boolean
   triggerKey: string
+  repeatWhileHeld: boolean
   steps: MacroStep[]
 }
 
@@ -87,6 +88,24 @@ export interface InventoryStashRule {
   humanization: HumanizationSettings
 }
 
+export interface StashInventoryRule {
+  id: string
+  name: string
+  enabled: boolean
+  triggerKey: string
+  columns: number
+  rows: number
+  grid: {
+    x: number
+    y: number
+    width: number
+    height: number
+  }
+  emptyColor: string
+  tolerance: number
+  humanization: HumanizationSettings
+}
+
 export interface TabletScannerRule {
   id: string
   name: string
@@ -101,13 +120,38 @@ export interface TabletScannerRule {
     height: number
   }
   scanDelayMs: number
+  emptyTolerance: number
   craft: TabletCraftSettings
   valueRules: TabletValueRuleConfig[]
+}
+
+export interface MapCrafterRule {
+  id: string
+  name: string
+  targetExecutable: string
+  columns: number
+  rows: number
+  grid: {
+    x: number
+    y: number
+    width: number
+    height: number
+  }
+  scanDelayMs: number
+  emptyTolerance: number
+  craft: MapCraftSettings
 }
 
 export interface ScreenPoint {
   x: number
   y: number
+}
+
+export interface MapCraftSettings {
+  alchemy: ScreenPoint
+  exalted: ScreenPoint
+  scouring: ScreenPoint
+  craftDelayMs: number
 }
 
 export interface TabletCraftSettings {
@@ -183,6 +227,35 @@ export interface TabletScanEvent {
   report: TabletScanReport
 }
 
+export interface MapScanItem {
+  slot: string
+  column: number
+  row: number
+  name?: string
+  itemType: string
+  rarity: string
+  rawText: string
+}
+
+export interface MapScanReport {
+  scannedSlots: number
+  maps: MapScanItem[]
+  skippedSlots: string[]
+}
+
+export interface MapCraftAction {
+  slot: string
+  currency: 'scouring' | 'alchemy' | 'exalted'
+  reason: string
+}
+
+export interface MapCraftReport {
+  initialScan: MapScanReport
+  actions: MapCraftAction[]
+  craftedSlots: string[]
+  skippedSlots: string[]
+}
+
 export interface AppProfile {
   id: string
   name: string
@@ -200,7 +273,9 @@ export interface AppProfile {
   pixelRules: PixelRule[]
   toggleHoldRules: ToggleHoldRule[]
   inventoryStashRules: InventoryStashRule[]
+  stashInventoryRules: StashInventoryRule[]
   tabletScannerRules: TabletScannerRule[]
+  mapCrafterRules: MapCrafterRule[]
 }
 
 export interface ProfileStore {

@@ -3,10 +3,12 @@ mod foreground;
 mod input;
 mod inventory;
 mod macros;
+mod map_crafter;
 mod profiles;
 mod recorder;
 mod runtime;
 mod screen;
+mod stash_inventory;
 mod tablets;
 
 use runtime::RuntimeState;
@@ -25,6 +27,7 @@ pub fn run() {
                         .build(),
                 )?;
             }
+            input::start_wheel_monitor().map_err(std::io::Error::other)?;
             runtime::start_hotkey_monitor(app.handle().clone());
             Ok(())
         })
@@ -47,11 +50,15 @@ pub fn run() {
             commands::test_pixel_actions,
             commands::test_inventory_stash_rule,
             commands::capture_inventory_stash_snapshot,
+            commands::test_stash_inventory_rule,
             commands::scan_tablet_stash,
             commands::scan_and_craft_tablets,
             commands::capture_tablet_craft_location,
             commands::highlight_tablet_slot,
             commands::move_tablet_to_inventory,
+            commands::scan_map_grid,
+            commands::craft_maps,
+            commands::capture_map_currency_location,
             commands::validate_key_sequence,
         ])
         .build(tauri::generate_context!())

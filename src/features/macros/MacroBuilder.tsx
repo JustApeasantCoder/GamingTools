@@ -49,6 +49,7 @@ export function MacroBuilder({
       name: `Macro ${profile.macroRules.length + 1}`,
       enabled: true,
       triggerKey: `F${Math.min(profile.macroRules.length + 6, 12)}`,
+      repeatWhileHeld: false,
       steps: [newStep],
     }
     onProfileChange({
@@ -133,6 +134,7 @@ export function MacroBuilder({
     const wait = step.humanizedDelay.enabled
       ? `Wait ${step.humanizedDelay.minMs}-${step.humanizedDelay.maxMs} ms`
       : 'No wait'
+    if (isScrollAction(step.key)) return `Scroll once | ${wait}`
     return `Hold ${step.pressDuration.minMs}-${step.pressDuration.maxMs} ms | ${wait}`
   }
 
@@ -162,7 +164,12 @@ export function MacroBuilder({
           <KeyCaptureButton
             value={macro.triggerKey}
             label="Change"
-            onChange={(triggerKey) => updateMacro({ ...macro, triggerKey })}
+            allowWheel
+            onChange={(triggerKey) => updateMacro({
+              ...macro,
+              triggerKey,
+              repeatWhileHeld: isScrollAction(triggerKey) ? false : macro.repeatWhileHeld,
+            })}
           />
         </label>
         <label>
@@ -182,12 +189,27 @@ export function MacroBuilder({
             </span>
           </span>
         </label>
+        <label className="editor-enabled-control">
+          Trigger behavior
+          <span className="editor-status-field">
+            <span>{macro.repeatWhileHeld ? 'Repeat while held' : 'Run once per press'}</span>
+            <span className="switch-row compact">
+              <span className="sr-only">Repeat {macro.name} while its shortcut is held</span>
+              <input
+                type="checkbox"
+                checked={macro.repeatWhileHeld}
+                disabled={isScrollAction(macro.triggerKey)}
+                onChange={(event) => updateMacro({ ...macro, repeatWhileHeld: event.target.checked })}
+              />
+            </span>
+          </span>
+        </label>
       </section>
 
       <section className="macro-summary">
         <div>
           <h2>{macro.name}</h2>
-          <p><kbd>{macro.triggerKey}</kbd><span>{macro.steps.length} action{macro.steps.length === 1 ? '' : 's'}</span><span>Approx. {formatDuration(duration.minMs)} to {formatDuration(duration.maxMs)}</span></p>
+          <p><kbd>{macro.triggerKey}</kbd><span>{macro.steps.length} action{macro.steps.length === 1 ? '' : 's'}</span><span>{macro.repeatWhileHeld ? 'Repeats while held' : 'Runs once'}</span><span>Approx. {formatDuration(duration.minMs)} to {formatDuration(duration.maxMs)}</span></p>
         </div>
         <div className="toolbar-group">
           <Button icon={Shuffle} onClick={randomizeTiming}>Randomize timing</Button>
@@ -248,4 +270,8 @@ export function MacroBuilder({
 
 function randomInt(min: number, max: number) {
   return Math.floor(Math.random() * (max - min + 1)) + min
+}
+
+function isScrollAction(key: string) {
+  return key.trim().toUpperCase() === 'SCROLL UP' || key.trim().toUpperCase() === 'SCROLL DOWN'
 }
