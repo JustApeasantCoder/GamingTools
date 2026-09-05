@@ -1,4 +1,5 @@
 mod commands;
+mod diagnostics;
 mod foreground;
 mod input;
 mod inventory;
@@ -16,10 +17,21 @@ use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let diagnostics_guard = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let setup_guard = diagnostics_guard.clone();
     let app = tauri::Builder::default()
         .manage(RuntimeState::default())
         .manage(recorder::RecorderState::default())
-        .setup(|app| {
+        .setup(move |app| {
+            match app.path().app_log_dir() {
+                Ok(directory) => match diagnostics::initialize(&directory) {
+                    Ok(guard) => *setup_guard.lock().unwrap() = Some(guard),
+                    Err(error) => eprintln!("Could not initialize diagnostics: {error}"),
+                },
+                Err(error) => eprintln!("Could not resolve diagnostics directory: {error}"),
+            }
+            tracing::info!(target: "gaming_toolkit.diagnostics", subsystem = "app",
+                event = "app.started", "[App] Gaming Toolkit started");
             if cfg!(debug_assertions) {
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()
@@ -63,12 +75,18 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application");
-    app.run(|app, event| {
+    app.run(move |app, event| {
         if matches!(
             event,
             tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
         ) {
             let _ = app.state::<RuntimeState>().stop(app);
+        }
+        if matches!(event, tauri::RunEvent::Exit) {
+            tracing::info!(target: "gaming_toolkit.diagnostics", subsystem = "app",
+                event = "app.stopped", "[App] Gaming Toolkit stopped");
+            // Drain queued events before Tauri completes process shutdown.
+            diagnostics_guard.lock().unwrap().take();
         }
     });
 }

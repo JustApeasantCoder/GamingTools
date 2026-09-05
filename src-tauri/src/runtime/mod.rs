@@ -1310,11 +1310,13 @@ fn release_pixel_rule(app: &AppHandle, rule: &PixelRule, inputs: &InputOwners) {
 }
 
 fn emit_event(app: &AppHandle, kind: &str, message: impl Into<String>) {
+    let message = message.into();
+    crate::diagnostics::runtime_event(kind, &message);
     let _ = app.emit(
         "runtime-event",
         RuntimeEvent {
             kind: kind.into(),
-            message: message.into(),
+            message,
             rule_id: None,
             snapshot_colors: None,
         },
@@ -1327,11 +1329,13 @@ fn emit_snapshot_event(
     snapshot_colors: Vec<InventorySlotSnapshot>,
     message: impl Into<String>,
 ) {
+    let message = message.into();
+    crate::diagnostics::runtime_event("inventorySnapshot", &message);
     let _ = app.emit(
         "runtime-event",
         RuntimeEvent {
             kind: "inventorySnapshot".into(),
-            message: message.into(),
+            message,
             rule_id: Some(rule_id.into()),
             snapshot_colors: Some(snapshot_colors),
         },

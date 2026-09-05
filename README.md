@@ -60,6 +60,21 @@ Build the desktop app:
 npm run tauri:build
 ```
 
+## Local developer tools
+
+The local `.mallee/` and `.deebugee/` configurations are Git-ignored. Mallee's
+`Build Installer` action increments the patch version across npm, Cargo, and
+Tauri, then builds NSIS and MSI installers under `src-tauri/target/release/bundle`.
+It restores the version files if the build fails. It does not publish a release.
+The ordinary `npm run tauri:build` command keeps the current version.
+
+DeeBugee reads structured startup, shutdown, runtime activity, and runtime error
+events from `%LOCALAPPDATA%/com.gamingtoolkit.desktop/logs/GamingToolkit.jsonl`.
+Both development and installed builds use that directory. The backend uses a
+bounded asynchronous writer and retains one 50 MiB active file and one archive.
+New logging becomes active after rebuilding and restarting the desktop app.
+Use Mallee's DeeBugee link or `dee-bugee.exe --project .` from this repository.
+
 ## Project Layout
 
 - `src/features/macros` owns macro chain UI and macro-specific frontend behavior.

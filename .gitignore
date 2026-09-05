@@ -22,3 +22,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Local developer tool configuration
+.mallee/
+.deebugee/
